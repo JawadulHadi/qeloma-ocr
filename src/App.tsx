@@ -46,9 +46,10 @@ export default function App() {
     <div style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}>
       <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        flexWrap: 'wrap', rowGap: 8,
         padding: '18px 24px', borderBottom: '1px solid var(--ql-border)',
       }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', rowGap: 4, gap: 10 }}>
           <span style={{ fontFamily: 'var(--ql-font-head)', fontSize: 24, color: 'var(--ql-brand)', fontWeight: 700 }}>
             Qeloma
           </span>

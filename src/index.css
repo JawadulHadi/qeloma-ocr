@@ -64,3 +64,4 @@ body {
 }
 
 @media (max-width: 820px){ .ocr-main{ grid-template-columns: 1fr !important; } }
+@media (max-width: 480px){ .ocr-mode-picker{ grid-template-columns: 1fr !important; } }

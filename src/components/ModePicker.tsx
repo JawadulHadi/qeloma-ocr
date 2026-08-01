@@ -8,7 +8,7 @@ const MODES: { id: OcrMode; label: string; blurb: string }[] = [
 
 export function ModePicker({ mode, onChange }: { mode: OcrMode; onChange: (m: OcrMode) => void }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+    <div className="ocr-mode-picker" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
       {MODES.map((m) => {
         const active = mode === m.id;
         return (
