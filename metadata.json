@@ -1,0 +1,7 @@
+{
+  "name": "Qeloma OCR",
+  "description": "Read anything with local Tesseract WASM and Gemini vision, with confidence scores and structured field extraction.",
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
