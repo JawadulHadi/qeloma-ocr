@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>Signing in — Scanwise</title>
+    <style>
+      body { margin: 0; display: grid; place-items: center; min-height: 100vh; background: #0d0f14; color: #e8eaf0; font: 15px system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <p>Signing in…</p>
+    <!-- Microsoft sends the sign-in result here; this hands it to the Scanwise window that opened the pop-up. -->
+    <script type="module" src="/src/auth/microsoftRedirect.ts"></script>
+  </body>
+</html>

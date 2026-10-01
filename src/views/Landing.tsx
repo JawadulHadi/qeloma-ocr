@@ -5,11 +5,14 @@ import { useTheme } from '../theme';
 import { Specimen } from './Specimen';
 
 const STEPS = [
-  { title: 'Extract', text: 'Text comes out of any file, with a confidence score for every word.' },
-  { title: 'Understand', text: 'Get a summary, key factors and key points in plain language.' },
+  { title: 'Extract', text: 'Text comes out of every file, with a confidence score for every word.' },
+  {
+    title: 'Understand',
+    text: 'One plain-language summary across all your documents, each point marked with the one it came from.',
+  },
   {
     title: 'Act',
-    text: 'See the options the document offers and practical next steps. Ask follow-ups. Export as Markdown.',
+    text: 'See your options and practical next steps. Ask follow-ups by typing, by voice or by quoting a passage.',
   },
 ];
 
@@ -28,8 +31,8 @@ export function Landing({ onStart }: { onStart(): void }) {
               Know what a document says — and what to do about it.
             </h1>
             <p className="hero-sub">
-              Upload a photo, scan, PDF or Office file. Scanwise reads the text, shows how sure it is, then lays out
-              the key factors and your options.
+              Add photos, scans, PDFs and Office files — one, or a whole folder. Scanwise reads the text, shows how
+              sure it is, then lays out the key factors and your options.
             </p>
             {error && (
               <div className="alert alert-warn" role="alert">

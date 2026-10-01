@@ -10,11 +10,14 @@ import {
 } from 'react';
 import Markdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ArrowUp, RotateCcw, Square } from 'lucide-react';
+import { ArrowUp, Mic, RotateCcw, Square, X } from 'lucide-react';
 import { MAX_QUESTION_CHARS } from '../../shared/limits';
-import type { WorkspaceState } from '../hooks/useConversation';
-import type { StoredMessage } from '../lib/store';
+import { DEFAULT_QUOTE_QUESTION, QUOTE_RESERVE_CHARS, type WorkspaceState } from '../hooks/useConversation';
+import { CITE_HREF_PREFIX, remarkCitations } from '../lib/remarkCitations';
+import type { MessageQuote, StoredMessage } from '../lib/store';
+import { CitationChip } from './Citations';
 import { formatCount } from './format';
+import { useDictation } from './useDictation';
 
 const SUGGESTIONS = [
   'What should I do first?',
@@ -23,13 +26,26 @@ const SUGGESTIONS = [
   'What’s missing or unclear?',
 ];
 
-/** Show the character count once a question gets close to the limit. */
-const COUNT_FROM = Math.floor(MAX_QUESTION_CHARS * 0.9);
+const MULTI_SOURCE_SUGGESTIONS = [
+  'What should I do first?',
+  'Do these documents disagree anywhere?',
+  'List every deadline and amount',
+  'What’s missing or unclear?',
+];
 
 interface ChatPanelProps {
   messages: StoredMessage[];
   chat: WorkspaceState['chat'];
-  onAsk(question: string): void;
+  /** How many sources the answers draw on. */
+  sourceCount: number;
+  /** A passage waiting to be sent with the next question. */
+  quote: MessageQuote | null;
+  /** Changes whenever the composer should take focus (a passage was just quoted). */
+  focusRequest: number;
+  /** Voice input may fall back to server transcription. */
+  canTranscribe: boolean;
+  onAsk(question: string, quote?: MessageQuote): void;
+  onClearQuote(): void;
   onStop(): void;
 }
 
@@ -42,12 +58,38 @@ interface PendingQuestion {
  * The follow-up thread and its composer. Returns two siblings so the composer can stick to the bottom of the
  * whole analysis column, not just this section.
  */
-export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
+export function ChatPanel({
+  messages,
+  chat,
+  sourceCount,
+  quote,
+  focusRequest,
+  canTranscribe,
+  onAsk,
+  onClearQuote,
+  onStop,
+}: ChatPanelProps) {
   const [question, setQuestion] = useState('');
   const [pending, setPending] = useState<PendingQuestion | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const following = useRef(false);
+  /** What was in the box when dictation started; dictated words are added after it. */
+  const dictationBase = useRef('');
+  /** False once the question was sent, so words that arrive late don't refill the emptied box. */
+  const dictating = useRef(false);
+  const maxLength = quote ? MAX_QUESTION_CHARS - QUOTE_RESERVE_CHARS : MAX_QUESTION_CHARS;
+  const countFrom = Math.floor(maxLength * 0.9);
+  const dictation = useDictation({
+    canTranscribe,
+    onText: (text, final) => {
+      if (!dictating.current) return;
+      const base = dictationBase.current;
+      setQuestion(`${base}${base && text && !/\s$/.test(base) ? ' ' : ''}${text}`.slice(0, maxLength));
+      if (final) dictating.current = false;
+    },
+  });
+  const listening = dictation.status === 'listening';
 
   // The question is shown from here until the stored thread contains it, whenever the controller appends it.
   const showPending =
@@ -83,18 +125,39 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
     input.style.height = `${input.scrollHeight + input.offsetHeight - input.clientHeight}px`;
   }, [question]);
 
-  const ask = (raw: string): boolean => {
-    const text = raw.trim();
+  useEffect(() => {
+    if (focusRequest > 0) inputRef.current?.focus();
+  }, [focusRequest]);
+
+  const ask = (raw: string, withQuote?: MessageQuote): boolean => {
+    const text = raw.trim() || (withQuote ? DEFAULT_QUOTE_QUESTION : '');
     if (!text || chat.streaming) return false;
     setPending({ text, askedAt: Date.now() });
     following.current = true;
-    onAsk(text);
+    onAsk(text, withQuote);
     return true;
   };
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
-    if (ask(question)) setQuestion('');
+    if (dictation.status !== 'idle') {
+      dictating.current = false;
+      dictation.stop();
+    }
+    if (ask(question, quote ?? undefined)) {
+      setQuestion('');
+      onClearQuote();
+    }
+  };
+
+  const toggleDictation = () => {
+    if (listening) {
+      dictation.stop();
+      return;
+    }
+    dictationBase.current = question;
+    dictating.current = true;
+    dictation.start();
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -108,14 +171,16 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
     <>
       <section className="chat" aria-labelledby="chat-title">
         <h2 id="chat-title" className="chat-title">
-          Ask about this document
+          {sourceCount > 1 ? `Ask about these ${sourceCount} sources` : 'Ask about this document'}
         </h2>
 
         {empty && (
           <div className="suggestions">
-            <p className="chat-hint">Answers are based on the document’s text. Start with one of these:</p>
+            <p className="chat-hint">
+              Answers come from the ticked sources and show which one they used. Start with one of these:
+            </p>
             <ul className="suggestion-list">
-              {SUGGESTIONS.map((suggestion) => (
+              {(sourceCount > 1 ? MULTI_SOURCE_SUGGESTIONS : SUGGESTIONS).map((suggestion) => (
                 <li key={suggestion}>
                   <button type="button" className="suggestion" onClick={() => ask(suggestion)}>
                     {suggestion}
@@ -156,7 +221,11 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
           <div className="chat-error" role="alert">
             <p>{chat.error}</p>
             {lastQuestion && (
-              <button type="button" className="btn btn-ghost btn-sm" onClick={() => ask(lastQuestion)}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => ask(lastQuestion, messages.findLast((message) => message.role === 'user')?.quote)}
+              >
                 <RotateCcw size={16} aria-hidden="true" />
                 Try again
               </button>
@@ -167,8 +236,16 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
       </section>
 
       <form className="composer" onSubmit={submit}>
+        {quote && (
+          <div className="composer-quote">
+            <QuoteBlock quote={quote} />
+            <button type="button" className="icon-btn" aria-label="Remove the quoted passage" onClick={onClearQuote}>
+              <X aria-hidden="true" />
+            </button>
+          </div>
+        )}
         <label htmlFor="chat-question" className="visually-hidden">
-          Ask a question about this document
+          {quote ? 'Say what you want to know about the quoted passage' : 'Ask a question about the sources'}
         </label>
         <textarea
           ref={inputRef}
@@ -176,17 +253,36 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
           className="field composer-input"
           rows={1}
           value={question}
-          placeholder="Ask a follow-up question"
-          maxLength={MAX_QUESTION_CHARS}
+          placeholder={listening ? 'Listening…' : quote ? 'What do you want to know about this passage?' : 'Ask a follow-up question'}
+          maxLength={maxLength}
           dir="auto"
+          readOnly={dictation.status === 'transcribing'}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={onKeyDown}
         />
+        {dictation.error && (
+          <p className="composer-error" role="alert">
+            {dictation.error}
+          </p>
+        )}
         <div className="composer-actions">
-          {question.length >= COUNT_FROM && (
+          {question.length >= countFrom && (
             <span className="composer-count">
-              {formatCount(question.length)} / {formatCount(MAX_QUESTION_CHARS)}
+              {formatCount(question.length)} / {formatCount(maxLength)}
             </span>
+          )}
+          {dictation.status === 'transcribing' && <span className="composer-count">Turning speech into text…</span>}
+          {dictation.available && (
+            <button
+              type="button"
+              className={listening ? 'icon-btn composer-mic is-listening' : 'icon-btn composer-mic'}
+              aria-label={listening ? 'Stop voice input' : 'Speak your question'}
+              aria-pressed={listening}
+              disabled={dictation.status === 'transcribing'}
+              onClick={toggleDictation}
+            >
+              {listening ? <Square size={14} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
+            </button>
           )}
           {chat.streaming && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={onStop}>
@@ -198,7 +294,7 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
             type="submit"
             className="icon-btn composer-send"
             aria-label="Send question"
-            disabled={question.trim().length === 0 || chat.streaming}
+            disabled={(question.trim().length === 0 && !quote) || chat.streaming}
           >
             <ArrowUp size={18} aria-hidden="true" />
           </button>
@@ -208,11 +304,26 @@ export function ChatPanel({ messages, chat, onAsk, onStop }: ChatPanelProps) {
   );
 }
 
+/** A quoted passage with the chip of the source it came from. */
+function QuoteBlock({ quote }: { quote: MessageQuote }) {
+  return (
+    <figure className="quote">
+      <blockquote className="quote-text" dir="auto">
+        {quote.text}
+      </blockquote>
+      <figcaption className="quote-source">
+        <CitationChip label={quote.label} />
+      </figcaption>
+    </figure>
+  );
+}
+
 const ChatMessage = memo(function ChatMessage({ message }: { message: StoredMessage }) {
   if (message.role === 'user') {
     return (
       <li className="msg msg-user">
         <span className="visually-hidden">You asked: </span>
+        {message.quote && <QuoteBlock quote={message.quote} />}
         <p className="msg-text" dir="auto">
           {message.content}
         </p>
@@ -232,7 +343,7 @@ const ChatMessage = memo(function ChatMessage({ message }: { message: StoredMess
   );
 });
 
-const REMARK_PLUGINS = [remarkGfm];
+const REMARK_PLUGINS = [remarkGfm, remarkCitations];
 // Images are dropped so an answer can never make the browser fetch a URL on its own.
 const DISALLOWED_ELEMENTS = ['img'];
 const MARKDOWN_COMPONENTS: Components = { a: ExternalLink, table: ScrollableTable };
@@ -251,6 +362,7 @@ function AssistantMarkdown({ text }: { text: string }) {
 }
 
 function ExternalLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
+  if (href?.startsWith(CITE_HREF_PREFIX)) return <CitationChip label={href.slice(CITE_HREF_PREFIX.length)} />;
   return (
     <a href={href} target="_blank" rel="noopener noreferrer">
       {children}

@@ -7,7 +7,8 @@ import {
   type GenerateContentResponse,
   type HttpRetryOptions,
 } from '@google/genai';
-import type { Analysis, DocumentMeta } from '../shared/types.js';
+import { stripUnknownCitations } from '../shared/citations.js';
+import type { Analysis } from '../shared/types.js';
 import { geminiModel, requireGeminiApiKey } from './env.js';
 import { HttpError } from './http.js';
 import {
@@ -18,8 +19,10 @@ import {
   buildChatContext,
   buildChatSystemInstruction,
   buildVisionPrompt,
+  NO_SPEECH_MARKER,
+  TRANSCRIBE_PROMPT,
 } from './prompts.js';
-import { normalizeAnalysis, type ValidChatRequest } from './validate.js';
+import { normalizeAnalysis, type ValidChatRequest, type ValidSource } from './validate.js';
 
 type GeminiModels = Pick<GoogleGenAI['models'], 'generateContent' | 'generateContentStream'>;
 
@@ -96,16 +99,39 @@ async function generate(params: GenerateContentParameters): Promise<GenerateCont
   return response;
 }
 
+/**
+ * Keeps citations only where they belong and only of sources that exist: names and titles carry none, and a
+ * label the model made up ("[S9]" with three sources) is dropped rather than shown as a dead chip.
+ */
+export function cleanCitations(analysis: Analysis, labels: readonly string[]): Analysis {
+  const known = new Set(labels);
+  const none = new Set<string>();
+  const cite = (text: string) => stripUnknownCitations(text, known);
+  const plain = (text: string) => stripUnknownCitations(text, none).trim();
+  return {
+    title: plain(analysis.title) || analysis.title,
+    documentType: plain(analysis.documentType) || analysis.documentType,
+    language: plain(analysis.language) || analysis.language,
+    summary: cite(analysis.summary),
+    keyFactors: analysis.keyFactors.map((factor) => ({ ...factor, label: plain(factor.label) || factor.label, detail: cite(factor.detail) })),
+    keyPoints: analysis.keyPoints.map(cite),
+    solutions: analysis.solutions.map((solution) => ({
+      ...solution,
+      title: plain(solution.title) || solution.title,
+      description: cite(solution.description),
+      steps: solution.steps.map(cite),
+    })),
+    openQuestions: analysis.openQuestions.map(cite),
+    caveats: analysis.caveats.map(cite),
+  };
+}
+
 // ---- Operations ----------------------------------------------------------------
 
-export async function analyzeDocument(
-  text: string,
-  meta: DocumentMeta,
-  opts: { truncated: boolean; signal?: AbortSignal },
-): Promise<Analysis> {
+export async function analyzeSources(sources: ValidSource[], opts: { signal?: AbortSignal } = {}): Promise<Analysis> {
   const params: GenerateContentParameters = {
     model: geminiModel(),
-    contents: buildAnalysisPrompt(text, meta, opts.truncated),
+    contents: buildAnalysisPrompt(sources),
     config: {
       systemInstruction: ANALYSIS_SYSTEM_INSTRUCTION,
       responseMimeType: 'application/json',
@@ -115,8 +141,13 @@ export async function analyzeDocument(
   };
   // Structured output is reliable but not guaranteed; one retry absorbs the occasional malformed reply.
   for (let attempt = 0; attempt < 2; attempt++) {
-    const analysis = normalizeAnalysis(parseJson(candidateText(await generate(params))), meta.fileName);
-    if (analysis) return analysis;
+    const analysis = normalizeAnalysis(parseJson(candidateText(await generate(params))), sources[0].document.fileName);
+    if (analysis) {
+      return cleanCitations(
+        analysis,
+        sources.map((source) => source.label),
+      );
+    }
   }
   throw new HttpError(502, 'ai_unavailable', "The AI's analysis came back incomplete. Try again.", {
     cause: 'Gemini returned an unusable analysis twice in a row.',
@@ -126,7 +157,7 @@ export async function analyzeDocument(
 /** Document context first, then the conversation, as alternating user/model turns. */
 function chatContents(req: ValidChatRequest): Content[] {
   const turns: { role: 'user' | 'model'; text: string }[] = [
-    { role: 'user', text: buildChatContext(req.text, req.document, req.analysis, req.truncated) },
+    { role: 'user', text: buildChatContext(req.sources, req.analysis) },
     ...req.history.map((turn) => ({ role: turn.role === 'assistant' ? ('model' as const) : ('user' as const), text: turn.content })),
     { role: 'user', text: req.question },
   ];
@@ -147,7 +178,7 @@ export async function* streamChat(req: ValidChatRequest, opts: { signal?: AbortS
     stream = await models().generateContentStream({
       model: geminiModel(),
       contents: chatContents(req),
-      config: { systemInstruction: buildChatSystemInstruction(req.document), abortSignal: opts.signal },
+      config: { systemInstruction: buildChatSystemInstruction(req.sources), abortSignal: opts.signal },
     });
   } catch (err) {
     throw toHttpError(err);
@@ -182,4 +213,15 @@ export async function transcribeImage(
   });
   const text = stripCodeFence(candidateText(response));
   return text === NO_TEXT_MARKER ? '' : text;
+}
+
+/** Transcribes dictated speech; '' when the recording has none. */
+export async function transcribeAudio(audio: string, mimeType: string, opts: { signal?: AbortSignal } = {}): Promise<string> {
+  const response = await generate({
+    model: geminiModel(),
+    contents: [{ role: 'user', parts: [{ inlineData: { data: audio, mimeType } }, { text: TRANSCRIBE_PROMPT }] }],
+    config: { abortSignal: opts.signal },
+  });
+  const text = stripCodeFence(candidateText(response));
+  return text === NO_SPEECH_MARKER ? '' : text;
 }

@@ -51,7 +51,7 @@ export function HistoryMenu({ history, currentId, compact, onOpen, onDelete, onE
 function matches(item: ConversationSummary, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [item.title, item.fileName, item.typeLabel].some((value) => value.toLowerCase().includes(q));
+  return [item.title, item.typeLabel, ...item.sourceNames].some((value) => value.toLowerCase().includes(q));
 }
 
 function HistoryPanel({
@@ -67,7 +67,7 @@ function HistoryPanel({
 
   if (history.length === 0) {
     return (
-      <p className="menu-empty">Nothing here yet. Your documents will appear here after you read them.</p>
+      <p className="menu-empty">Nothing here yet. Your conversations appear here once you add a source.</p>
     );
   }
 

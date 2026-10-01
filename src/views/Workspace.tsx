@@ -1,27 +1,42 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FileUp, LogIn, Plus } from 'lucide-react';
+import { FileUp, LogIn, Plus, TriangleAlert, X } from 'lucide-react';
 import type { SessionUser } from '../../shared/types';
 import { useAuth } from '../auth';
 import { AnalysisPane } from '../components/AnalysisPane';
 import { AppHeader } from '../components/AppHeader';
-import { DocumentPane, type DocumentFile } from '../components/DocumentPane';
+import type { SourceActions } from '../components/useFilePicker';
+import { CitationContext } from '../components/citationContext';
 import { HistoryMenu } from '../components/HistoryMenu';
+import { PasteTextModal } from '../components/PasteTextModal';
+import { SourcesPanel } from '../components/SourcesPanel';
+import { SourceViewer } from '../components/SourceViewer';
 import { Tabs } from '../components/Tabs';
 import { UploadPanel } from '../components/UploadPanel';
 import { useMediaQuery } from '../components/useMediaQuery';
 import { UserMenu } from '../components/UserMenu';
-import { useConversation, type Phase } from '../hooks/useConversation';
+import { useConversation } from '../hooks/useConversation';
+import type { SkippedFile } from '../lib/bundle';
+import { PickerError, PopupBlockedError } from '../lib/pickers/common';
+import { pickFromDrive } from '../lib/pickers/drive';
+import type { OneDriveSession } from '../lib/pickers/onedrive';
+import type { MessageQuote, SourceOrigin } from '../lib/store';
 
-type PaneTab = 'document' | 'analysis';
+type PaneTab = 'sources' | 'chat';
 
-const BUSY: Phase[] = ['preparing', 'extracting', 'analyzing'];
+/** Something to tell the reader about a Drive or OneDrive pick, with an optional follow-up action. */
+interface Notice {
+  message: string;
+  action?: { label: string; run(): void };
+}
+
+const PICKER_FAILED = 'Something went wrong while picking files. Try again.';
 
 function hasFiles(event: DragEvent): boolean {
   return event.dataTransfer?.types.includes('Files') ?? false;
 }
 
-/** Drag-and-drop anywhere on the page; the overlay shows while a file is over the window. */
-function useWindowDrop(onFile: (file: File) => void): boolean {
+/** Drag-and-drop anywhere on the page; the overlay shows while files are over the window. */
+function useWindowDrop(onFiles: (files: File[]) => void): boolean {
   const [dragging, setDragging] = useState(false);
   const depth = useRef(0);
 
@@ -47,8 +62,8 @@ function useWindowDrop(onFile: (file: File) => void): boolean {
       event.preventDefault();
       depth.current = 0;
       setDragging(false);
-      const file = event.dataTransfer?.files[0];
-      if (file) onFile(file);
+      const files = [...(event.dataTransfer?.files ?? [])];
+      if (files.length > 0) onFiles(files);
     };
     window.addEventListener('dragenter', onDragEnter);
     window.addEventListener('dragover', onDragOver);
@@ -60,7 +75,7 @@ function useWindowDrop(onFile: (file: File) => void): boolean {
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
     };
-  }, [onFile]);
+  }, [onFiles]);
 
   return dragging;
 }
@@ -72,46 +87,119 @@ interface WorkspaceProps {
   onSignIn?(): void;
 }
 
-/** An upload panel, then the document and its analysis side by side. */
+/**
+ * A notebook of sources: the Sources list (or one open source) on the left, the combined summary and the chat
+ * on the right. On phones the two columns become tabs. Before anything is added, a big upload panel.
+ */
 export function Workspace({ user, onSignIn }: WorkspaceProps) {
-  const { signOut } = useAuth();
+  const { signOut, config } = useAuth();
   const controller = useConversation(user);
-  const { guest, state, history, startFile, cancel, analyze, updateText } = controller;
-  const { phase, conversation, error } = state;
+  const { guest, state, history } = controller;
+  const { conversation, reading } = state;
   const wide = useMediaQuery('(min-width: 1024px)');
   const narrowHeader = useMediaQuery('(max-width: 639px)');
-  const [tab, setTab] = useState<PaneTab>('document');
-  const [seenPhase, setSeenPhase] = useState<Phase>(phase);
+  const [tab, setTab] = useState<PaneTab>('sources');
+  const [openSourceId, setOpenSourceId] = useState<string | null>(null);
+  const [quote, setQuote] = useState<MessageQuote | null>(null);
+  const [focusRequest, setFocusRequest] = useState(0);
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const oneDrive = useRef<OneDriveSession | null>(null);
 
-  // On narrow screens, jump to the analysis the moment it is ready; back to the document for a new file.
-  if (seenPhase !== phase) {
-    setSeenPhase(phase);
-    if (phase === 'ready' && seenPhase === 'analyzing') setTab('analysis');
-    if (phase === 'preparing') setTab('document');
+  // A different conversation (or a new one) starts with the source list and an empty composer.
+  const conversationId = conversation?.id ?? null;
+  const [seenConversation, setSeenConversation] = useState(conversationId);
+  if (seenConversation !== conversationId) {
+    setSeenConversation(conversationId);
+    setOpenSourceId(null);
+    setQuote(null);
   }
 
-  const onFile = useCallback((file: File) => void startFile(file), [startFile]);
-  const dragging = useWindowDrop(onFile);
+  // On phones, show the summary the moment it is ready.
+  const summarizing = state.analysis.running;
+  const [seenSummarizing, setSeenSummarizing] = useState(summarizing);
+  if (seenSummarizing !== summarizing) {
+    setSeenSummarizing(summarizing);
+    if (!summarizing && conversation?.analysis && !state.analysis.error) setTab('chat');
+  }
 
+  const { addFiles: queueFiles, cancelAllReading } = controller;
+  const addFiles = useCallback(
+    (files: File[], origin: SourceOrigin = 'upload', skipped: SkippedFile[] = []) => {
+      void queueFiles(files, origin, skipped);
+    },
+    [queueFiles],
+  );
+  const dragging = useWindowDrop(addFiles);
+
+  const busyCount = reading.filter((item) => item.status !== 'failed').length;
   useEffect(() => {
-    if (!BUSY.includes(phase)) return;
+    if (busyCount === 0) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
       // Escape inside an open menu or dialog belongs to it.
       if (document.querySelector('dialog[open], .sw-dropdown-panel')) return;
-      cancel();
+      cancelAllReading();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [phase, cancel]);
+  }, [busyCount, cancelAllReading]);
 
-  const saveText = (text: string) => {
-    updateText(text);
-    if (phase !== 'review') void analyze();
+  const pickerFailed = (err: unknown) => {
+    if (err instanceof PickerError) {
+      if (!err.silent) setNotice({ message: err.message });
+    } else {
+      setNotice({ message: PICKER_FAILED });
+    }
   };
 
-  const showUpload = phase === 'empty' || (phase === 'error' && error?.stage === 'extract' && !conversation);
-  const file: DocumentFile | null = conversation?.file ?? state.pendingFile;
+  const pickDrive = async () => {
+    if (!config?.drive || !config.googleClientId) return;
+    setNotice(null);
+    try {
+      const bundle = await pickFromDrive({ clientId: config.googleClientId, ...config.drive });
+      addFiles(bundle.files, 'drive', bundle.skipped);
+    } catch (err) {
+      pickerFailed(err);
+    }
+  };
+
+  const pickOneDrive = async () => {
+    const clientId = config?.oneDrive?.clientId;
+    if (!clientId) return;
+    setNotice(null);
+    try {
+      const { connectOneDrive, pickFromOneDrive } = await import('../lib/pickers/onedrive');
+      oneDrive.current ??= await connectOneDrive(clientId);
+      const bundle = await pickFromOneDrive(oneDrive.current);
+      addFiles(bundle.files, 'onedrive', bundle.skipped);
+    } catch (err) {
+      if (err instanceof PopupBlockedError) {
+        // Signing in used up the click that allows a new window; one more click opens the picker.
+        setNotice({
+          message: 'You’re signed in to Microsoft.',
+          action: { label: 'Choose files from OneDrive', run: () => void pickOneDrive() },
+        });
+      } else {
+        pickerFailed(err);
+      }
+    }
+  };
+
+  const actions: SourceActions = {
+    onFiles: (files) => addFiles(files),
+    onPaste: () => setPasteOpen(true),
+    onDrive: config?.drive && config.googleClientId ? () => void pickDrive() : undefined,
+    onOneDrive: config?.oneDrive ? () => void pickOneDrive() : undefined,
+  };
+
+  const showSource = (sourceId: string) => {
+    setOpenSourceId(sourceId);
+    if (!wide) setTab('sources');
+  };
+
+  const openSource = conversation?.sources.find((source) => source.id === openSourceId) ?? null;
+  const showUpload = !conversation && busyCount === 0;
 
   return (
     <>
@@ -122,10 +210,10 @@ export function Workspace({ user, onSignIn }: WorkspaceProps) {
               type="button"
               className="btn btn-ghost"
               onClick={controller.reset}
-              aria-label={narrowHeader ? 'New document' : undefined}
+              aria-label={narrowHeader ? 'New conversation' : undefined}
             >
               <Plus size={18} aria-hidden="true" />
-              {!narrowHeader && <span>New document</span>}
+              {!narrowHeader && <span>New</span>}
             </button>
             <HistoryMenu
               history={history}
@@ -156,74 +244,132 @@ export function Workspace({ user, onSignIn }: WorkspaceProps) {
       />
 
       <main className="workspace" id="main">
-        {showUpload ? (
-          <UploadPanel guest={guest} onFile={onFile} error={phase === 'error' ? (error?.message ?? null) : null} />
-        ) : (
-          <div className="work">
-            {!wide && (
-              <Tabs<PaneTab>
-                label="Workspace"
-                className="work-tabs"
-                value={tab}
-                onChange={setTab}
-                options={[
-                  { value: 'document', label: 'Document', panelId: 'pane-document' },
-                  { value: 'analysis', label: 'Analysis', panelId: 'pane-analysis' },
-                ]}
-              />
-            )}
-            <section
-              id="pane-document"
-              className="pane pane-document panel"
-              aria-label={wide ? 'Document' : undefined}
-              role={wide ? undefined : 'tabpanel'}
-              aria-labelledby={wide ? undefined : 'pane-document-tab'}
-              hidden={!wide && tab !== 'document'}
-            >
-              <DocumentPane
-                phase={phase}
-                file={file}
-                extraction={conversation?.extraction ?? null}
-                text={conversation?.text ?? ''}
-                textEdited={conversation?.textEdited ?? false}
-                preview={state.preview}
-                progress={state.progress}
-                showAnalyzeAction={!guest && !wide && phase === 'review'}
-                onCancel={cancel}
-                onSaveText={saveText}
-                onAnalyze={() => void analyze()}
-              />
-            </section>
-            <section
-              id="pane-analysis"
-              className="pane pane-analysis panel"
-              aria-label={wide ? 'Analysis' : undefined}
-              role={wide ? undefined : 'tabpanel'}
-              aria-labelledby={wide ? undefined : 'pane-analysis-tab'}
-              hidden={!wide && tab !== 'analysis'}
-            >
-              <AnalysisPane
-                guest={guest}
-                phase={phase}
-                conversation={conversation}
-                analyzeError={error?.stage === 'analyze' ? error.message : null}
-                chat={state.chat}
-                onAnalyze={() => void analyze()}
-                onCancel={cancel}
-                onExport={controller.exportCurrent}
-                onAsk={(question) => void controller.ask(question)}
-                onStopAnswer={controller.stopAnswer}
-              />
-            </section>
+        {notice && (
+          <div className="alert alert-warn workspace-notice" role="alert">
+            <TriangleAlert className="alert-icon" size={18} aria-hidden="true" />
+            <div className="alert-body">
+              <p>{notice.message}</p>
+              {notice.action && (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    const { run } = notice.action ?? {};
+                    setNotice(null);
+                    run?.();
+                  }}
+                >
+                  {notice.action.label}
+                </button>
+              )}
+            </div>
+            <button type="button" className="icon-btn" aria-label="Dismiss" onClick={() => setNotice(null)}>
+              <X aria-hidden="true" />
+            </button>
           </div>
         )}
+
+        {showUpload ? (
+          <UploadPanel
+            guest={guest}
+            actions={actions}
+            failures={reading.filter((item) => item.status === 'failed')}
+            onDismiss={controller.cancelReading}
+          />
+        ) : (
+          <CitationContext value={{ sources: conversation?.sources ?? [], open: showSource }}>
+            <div className="work">
+              {!wide && (
+                <Tabs<PaneTab>
+                  label="Workspace"
+                  className="work-tabs"
+                  value={tab}
+                  onChange={setTab}
+                  options={[
+                    { value: 'sources', label: 'Sources', panelId: 'pane-sources' },
+                    { value: 'chat', label: guest ? 'Summary' : 'Summary & chat', panelId: 'pane-chat' },
+                  ]}
+                />
+              )}
+              <section
+                id="pane-sources"
+                className="pane pane-sources panel"
+                aria-label={wide ? 'Sources' : undefined}
+                role={wide ? undefined : 'tabpanel'}
+                aria-labelledby={wide ? undefined : 'pane-sources-tab'}
+                hidden={!wide && tab !== 'sources'}
+              >
+                {openSource ? (
+                  <SourceViewer
+                    key={openSource.id}
+                    source={openSource}
+                    canQuote={!guest}
+                    onBack={() => setOpenSourceId(null)}
+                    onSaveText={(text) => controller.updateSourceText(openSource.id, text)}
+                    onRemove={() => {
+                      controller.removeSource(openSource.id);
+                      setOpenSourceId(null);
+                    }}
+                    onQuote={(text) => {
+                      setQuote({ sourceId: openSource.id, label: openSource.label, text });
+                      setFocusRequest((n) => n + 1);
+                      if (!wide) setTab('chat');
+                    }}
+                  />
+                ) : (
+                  <SourcesPanel
+                    sources={conversation?.sources ?? []}
+                    reading={reading}
+                    actions={actions}
+                    onOpen={setOpenSourceId}
+                    onToggle={controller.setSourceIncluded}
+                    onToggleAll={controller.setAllIncluded}
+                    onCancelReading={controller.cancelReading}
+                    onCancelAll={controller.cancelAllReading}
+                  />
+                )}
+              </section>
+              <section
+                id="pane-chat"
+                className="pane pane-analysis panel"
+                aria-label={wide ? 'Summary and chat' : undefined}
+                role={wide ? undefined : 'tabpanel'}
+                aria-labelledby={wide ? undefined : 'pane-chat-tab'}
+                hidden={!wide && tab !== 'chat'}
+              >
+                <AnalysisPane
+                  guest={guest}
+                  conversation={conversation}
+                  readingCount={busyCount}
+                  analysis={state.analysis}
+                  chat={state.chat}
+                  quote={quote}
+                  focusRequest={focusRequest}
+                  canTranscribe={!guest && (config?.aiConfigured ?? false)}
+                  onAnalyze={() => void controller.analyze()}
+                  onCancelAnalysis={controller.cancelAnalysis}
+                  onExport={controller.exportCurrent}
+                  onAsk={(question, withQuote) => void controller.ask(question, withQuote)}
+                  onClearQuote={() => setQuote(null)}
+                  onStopAnswer={controller.stopAnswer}
+                />
+              </section>
+            </div>
+          </CitationContext>
+        )}
       </main>
+
+      <PasteTextModal
+        open={pasteOpen}
+        onClose={() => setPasteOpen(false)}
+        onAdd={(title, text) => void controller.addText(title, text)}
+      />
 
       {dragging && (
         <div className="drop-overlay" aria-hidden="true">
           <div className="drop-overlay-card panel-raised">
             <FileUp size={28} />
-            <p>Drop to read this file</p>
+            <p>Drop to add {conversation ? 'these sources' : 'these files'}</p>
           </div>
         </div>
       )}

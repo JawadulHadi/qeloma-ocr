@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_GEMINI_MODEL,
+  driveConfig,
   geminiModel,
+  oneDriveConfig,
   requireGeminiApiKey,
   requireGoogleClientId,
   sessionSecret,
@@ -79,5 +81,17 @@ describe('env', () => {
     vi.stubEnv('SESSION_SECRET', TEST_SESSION_SECRET);
     vi.stubEnv('GOOGLE_CLIENT_ID', '');
     expect(signInClientId()).toBeNull();
+  });
+
+  it('offers Google Drive only when both picker settings are present, and OneDrive with its client id', () => {
+    vi.stubEnv('GOOGLE_API_KEY', 'browser-key');
+    vi.stubEnv('GOOGLE_APP_ID', '');
+    expect(driveConfig()).toBeNull();
+    vi.stubEnv('GOOGLE_APP_ID', '123456');
+    expect(driveConfig()).toEqual({ apiKey: 'browser-key', appId: '123456' });
+    vi.stubEnv('MICROSOFT_CLIENT_ID', '');
+    expect(oneDriveConfig()).toBeNull();
+    vi.stubEnv('MICROSOFT_CLIENT_ID', 'azure-app');
+    expect(oneDriveConfig()).toEqual({ clientId: 'azure-app' });
   });
 });

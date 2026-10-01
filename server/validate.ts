@@ -1,14 +1,15 @@
+import { shareBudget } from '../shared/budget.js';
 import {
   MAX_ANALYZE_CHARS,
+  MAX_AUDIO_BASE64_CHARS,
   MAX_CHAT_HISTORY,
   MAX_CHAT_TURN_CHARS,
   MAX_QUESTION_CHARS,
+  MAX_SOURCES,
   MAX_VISION_BASE64_CHARS,
 } from '../shared/limits.js';
 import type {
   Analysis,
-  AnalyzeRequest,
-  ChatRequest,
   ChatTurn,
   DocumentMeta,
   FileKind,
@@ -16,6 +17,8 @@ import type {
   Importance,
   KeyFactor,
   Solution,
+  SourceInput,
+  TranscribeRequest,
   VisionRequest,
 } from '../shared/types.js';
 import { HttpError } from './http.js';
@@ -89,21 +92,50 @@ export function validateDocumentMeta(value: unknown): DocumentMeta {
   };
 }
 
-/** Text over MAX_ANALYZE_CHARS is cut (and flagged) rather than rejected, so long documents still get an answer. */
-function validateDocumentText(value: unknown, emptyMessage: string): { text: string; truncated: boolean } {
-  const text = typeof value === 'string' ? value.trim() : '';
-  if (!text) throw badRequest(emptyMessage);
-  return text.length > MAX_ANALYZE_CHARS
-    ? { text: truncate(text, MAX_ANALYZE_CHARS), truncated: true }
-    : { text, truncated: false };
+const SOURCE_LABEL = /^S[1-9]\d{0,3}$/;
+
+/** A source after validation. `truncated` is set when its text was cut to fit the shared budget. */
+export interface ValidSource extends SourceInput {
+  truncated: boolean;
 }
 
-export type ValidAnalyzeRequest = AnalyzeRequest & { truncated: boolean };
+/**
+ * Sources without text are dropped: there is nothing to read or cite. Text beyond MAX_ANALYZE_CHARS in total is
+ * cut and flagged rather than rejected, and shared out so every source keeps a fair part.
+ */
+export function validateSources(value: unknown, emptyMessage: string): ValidSource[] {
+  if (!Array.isArray(value) || value.length === 0) throw badRequest(emptyMessage);
+  if (value.length > MAX_SOURCES) throw badRequest(`Use at most ${MAX_SOURCES} sources at a time.`);
+  const seen = new Set<string>();
+  const sources = value.flatMap((entry: unknown): SourceInput[] => {
+    if (!isRecord(entry)) throw badRequest('Each source needs a label, its text and its details.');
+    const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+    if (!SOURCE_LABEL.test(label)) throw badRequest('Each source label must look like S1, S2, S3…');
+    if (seen.has(label)) throw badRequest(`Two sources share the label ${label}.`);
+    seen.add(label);
+    const document = validateDocumentMeta(entry.document);
+    const text = typeof entry.text === 'string' ? entry.text.trim() : '';
+    return text ? [{ label, text, document }] : [];
+  });
+  if (sources.length === 0) throw badRequest(emptyMessage);
+  const allowed = shareBudget(
+    sources.map((source) => source.text.length),
+    MAX_ANALYZE_CHARS,
+  );
+  return sources.map((source, index) =>
+    source.text.length > allowed[index]
+      ? { ...source, text: truncate(source.text, allowed[index]), truncated: true }
+      : { ...source, truncated: false },
+  );
+}
+
+export interface ValidAnalyzeRequest {
+  sources: ValidSource[];
+}
 
 export function validateAnalyzeRequest(body: unknown): ValidAnalyzeRequest {
   const record = isRecord(body) ? body : {};
-  const { text, truncated } = validateDocumentText(record.text, "There's no text to analyze.");
-  return { text, document: validateDocumentMeta(record.document), truncated };
+  return { sources: validateSources(record.sources, "There's no text to analyze.") };
 }
 
 function validateHistory(value: unknown): ChatTurn[] {
@@ -118,7 +150,12 @@ function validateHistory(value: unknown): ChatTurn[] {
   });
 }
 
-export type ValidChatRequest = ChatRequest & { truncated: boolean };
+export interface ValidChatRequest {
+  sources: ValidSource[];
+  analysis: Analysis | null;
+  history: ChatTurn[];
+  question: string;
+}
 
 export function validateChatRequest(body: unknown): ValidChatRequest {
   const record = isRecord(body) ? body : {};
@@ -127,15 +164,12 @@ export function validateChatRequest(body: unknown): ValidChatRequest {
   if (question.length > MAX_QUESTION_CHARS) {
     throw badRequest(`Your question is too long. Keep it under ${MAX_QUESTION_CHARS.toLocaleString('en-US')} characters.`);
   }
-  const { text, truncated } = validateDocumentText(record.text, "There's no document text to ask about.");
   return {
-    text,
-    document: validateDocumentMeta(record.document),
+    sources: validateSources(record.sources, 'Choose at least one source with text to ask about.'),
     // A stale or malformed analysis only loses chat some context; it shouldn't block the question.
     analysis: record.analysis == null ? null : normalizeAnalysis(record.analysis),
     history: validateHistory(record.history),
     question,
-    truncated,
   };
 }
 
@@ -165,6 +199,33 @@ export function validateVisionRequest(body: unknown): VisionRequest {
     throw badRequest('The language hint must be a code like "eng" or "eng+urd".');
   }
   return language ? { image, mimeType, language } : { image, mimeType };
+}
+
+export const AUDIO_TOO_LARGE_MESSAGE = 'This recording is too long to transcribe. Keep it under two minutes.';
+
+/** Formats browsers record in (MediaRecorder) that Gemini accepts. */
+const AUDIO_MIME_TYPES: readonly string[] = [
+  'audio/webm',
+  'audio/ogg',
+  'audio/mp4',
+  'audio/mpeg',
+  'audio/aac',
+  'audio/wav',
+  'audio/flac',
+];
+
+export function validateTranscribeRequest(body: unknown): TranscribeRequest {
+  const record = isRecord(body) ? body : {};
+  const { audio } = record;
+  if (typeof audio !== 'string' || !audio) throw badRequest('The recording is missing.');
+  if (audio.length > MAX_AUDIO_BASE64_CHARS) throw new HttpError(413, 'payload_too_large', AUDIO_TOO_LARGE_MESSAGE);
+  if (audio.length % 4 !== 0 || !BASE64.test(audio)) {
+    throw badRequest("The recording isn't valid base64. Send the bytes without a data: prefix.");
+  }
+  // "audio/webm;codecs=opus" → "audio/webm": the codec lives in the container, and Gemini wants the bare type.
+  const mimeType = typeof record.mimeType === 'string' ? record.mimeType.split(';')[0].trim().toLowerCase() : '';
+  if (!AUDIO_MIME_TYPES.includes(mimeType)) throw badRequest("This browser's recording format isn't supported.");
+  return { audio, mimeType };
 }
 
 // ---- Analysis (model output, or an analysis echoed back by the browser) -------

@@ -1004,12 +1004,15 @@
   min-height: 0;
 }
 
-.work-tabs {
+/* Two classes, so it wins over .tabs (fit-content), which comes later. */
+.tabs.work-tabs {
   width: 100%;
 }
 
 .work-tabs .tab {
   flex: 1;
+  padding-inline: 10px;
+  white-space: nowrap;
 }
 
 .pane {
@@ -1731,8 +1734,10 @@
   border-top: 1px solid var(--sw-border);
 }
 
+/* Page labels stay out of selections, so a quoted passage is only the document's own words. */
 .doc-page-head {
   margin-bottom: 8px;
+  user-select: none;
 }
 
 .doc-page-meta {
@@ -2304,6 +2309,7 @@
   bottom: 0;
   z-index: 2;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
   margin-bottom: 16px;
@@ -2365,6 +2371,423 @@
   opacity: 1;
 }
 
+/* ---- Sources ------------------------------------------------------------------------------------------------------ */
+
+.workspace-notice {
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.workspace-notice .alert-body {
+  flex: 1;
+}
+
+.sources {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sources-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sources-empty {
+  color: var(--sw-text-muted);
+  font-size: 0.9375rem;
+}
+
+.source-all {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.source-all .checkbox {
+  margin: 0;
+}
+
+.source-all-count {
+  margin-left: auto;
+  color: var(--sw-text-muted);
+  font-family: var(--sw-font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.source-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.source-list:empty {
+  display: none;
+}
+
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--sw-border);
+  border-radius: var(--sw-radius);
+  background: var(--sw-panel-sunken);
+}
+
+.source-row .checkbox {
+  margin: 0;
+}
+
+.source-row.is-excluded .source-open {
+  opacity: 0.6;
+}
+
+.source-row.is-reading {
+  gap: 10px;
+  padding: 8px 4px 8px 12px;
+}
+
+.source-row.is-failed {
+  border-color: color-mix(in srgb, var(--sw-danger) 40%, transparent);
+  background: var(--sw-danger-soft);
+}
+
+.source-row.is-failed .source-icon {
+  color: var(--sw-danger);
+}
+
+.source-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: var(--sw-radius-sm);
+  background: none;
+  text-align: left;
+}
+
+.source-open:hover .source-file {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.source-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  color: var(--sw-accent-ink);
+}
+
+.source-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.source-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-label {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--sw-accent-soft);
+  color: var(--sw-accent-ink);
+  font-family: var(--sw-font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.source-file {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--sw-text-muted);
+  font-family: var(--sw-font-mono);
+  font-size: 0.75rem;
+}
+
+.source-confidence {
+  font-weight: 700;
+}
+
+.source-error {
+  color: var(--sw-text);
+  font-size: 0.8125rem;
+}
+
+.source-chevron {
+  flex: none;
+  color: var(--sw-text-muted);
+}
+
+.sources-cancel {
+  align-self: flex-start;
+}
+
+.add-panel .menu-item > span {
+  display: flex;
+  flex-direction: column;
+}
+
+.menu-item-note {
+  color: var(--sw-text-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+/* ---- Source viewer ------------------------------------------------------------------------------------------------ */
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.viewer-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.viewer-back {
+  margin-left: -8px;
+}
+
+.viewer-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 12px;
+  border-radius: 999px;
+  background: var(--sw-danger-soft);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.viewer-origin {
+  margin-top: -6px;
+  color: var(--sw-text-muted);
+  font-size: 0.8125rem;
+}
+
+.file-chip-name .source-label {
+  margin-right: 4px;
+  vertical-align: 1px;
+}
+
+.doc-hint {
+  color: var(--sw-text-muted);
+  font-size: 0.8125rem;
+}
+
+.doc-text-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.quote-float {
+  position: fixed;
+  z-index: 40;
+  box-shadow: var(--sw-shadow);
+  transform: translateX(-50%);
+}
+
+/* ---- Citations ---------------------------------------------------------------------------------------------------- */
+
+.cite-group {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 4px;
+  vertical-align: 1px;
+}
+
+.cite {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--sw-accent-ink) 35%, transparent);
+  border-radius: 6px;
+  background: var(--sw-accent-soft);
+  color: var(--sw-accent-ink);
+  font-family: var(--sw-font-mono);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+button.cite:hover {
+  border-color: var(--sw-accent-ink);
+}
+
+.cite.is-gone {
+  border-style: dashed;
+  background: transparent;
+  color: var(--sw-text-muted);
+}
+
+/* A citation inside a chat answer, right after the word it follows. */
+.md .cite {
+  margin-left: 3px;
+  vertical-align: 1px;
+}
+
+.stale {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px 10px 14px;
+  border: 1px solid var(--sw-border-strong);
+  border-radius: var(--sw-radius);
+  background: var(--sw-panel-sunken);
+  font-size: 0.875rem;
+}
+
+.stale p {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stale svg {
+  flex: none;
+  color: var(--sw-accent-ink);
+}
+
+/* ---- Quotes in the chat ------------------------------------------------------------------------------------------- */
+
+.quote {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.quote-text {
+  max-height: 9.5em;
+  margin: 0;
+  padding: 2px 0 2px 12px;
+  overflow: hidden;
+  border-left: 3px solid var(--sw-accent);
+  color: var(--sw-text-muted);
+  font-size: 0.875rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quote-source {
+  display: flex;
+}
+
+.msg-user .quote {
+  margin-bottom: 4px;
+}
+
+.composer-quote {
+  display: flex;
+  flex-basis: 100%;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 4px 8px 10px;
+  border-bottom: 1px solid var(--sw-border);
+}
+
+.composer-quote .quote {
+  flex: 1;
+  min-width: 0;
+}
+
+.composer-error {
+  flex-basis: 100%;
+  order: 3;
+  padding: 0 8px 4px;
+  color: var(--sw-danger);
+  font-size: 0.8125rem;
+}
+
+.composer-mic.is-listening {
+  background: var(--sw-danger-soft);
+  color: var(--sw-danger);
+  animation: lamp-pulse 1.2s ease-in-out infinite alternate;
+}
+
+/* ---- Upload extras and Paste text -------------------------------------------------------------------------------- */
+
+.upload-failures {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  font-size: 0.875rem;
+}
+
+.upload-failures li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.upload-more {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.paste-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.paste-area {
+  min-height: 240px;
+  resize: vertical;
+}
+
+.paste-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* ---- Reduced motion: every animated piece settles on a meaningful still frame ---------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
@@ -2388,6 +2811,7 @@
 
   .boot-lamp,
   .lamp-dot,
+  .composer-mic.is-listening,
   .skeleton,
   .caret,
   .md.is-streaming > :last-child::after {

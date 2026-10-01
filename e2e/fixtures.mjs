@@ -183,6 +183,15 @@ export async function generateFixtures(browser, outDir) {
     'page.html': Buffer.from('<html><head><style>.x{}</style><script>var hidden=1</script></head><body><h1>Refund policy</h1><p>Refunds are issued within 14 days.</p></body></html>', 'utf8'),
     'letter.rtf': Buffer.from('{\\rtf1\\ansi{\\fonttbl{\\f0 Arial;}}\\f0 Dear customer,\\par Your claim number is 55-102.\\par}', 'latin1'),
     'legacy.doc': Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(504)]),
+    // A folder of documents as one upload, with the clutter macOS and Windows add to archives.
+    'bundle.zip': Buffer.from(
+      zipSync({
+        'docs/lease-letter.txt': strToU8('The deposit of Rs 170,000 is returned within 30 days.\n'),
+        'docs/water-bill.md': strToU8('# Water bill\n\nPay Rs 2,300 by 20 October 2026.\n'),
+        'docs/.DS_Store': strToU8('junk'),
+        '__MACOSX/docs/._lease-letter.txt': strToU8('junk'),
+      }),
+    ),
   };
   for (const [name, bytes] of Object.entries(files)) await writeFile(join(outDir, name), bytes);
   return Object.fromEntries(Object.keys(files).map((n) => [n, join(outDir, n)]));
