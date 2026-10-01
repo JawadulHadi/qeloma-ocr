@@ -8,7 +8,10 @@ what to do about it.
 3. **Act.** Solutions are marked *in the document* or *suggested*. Ask follow-up questions in a chat grounded in
    the text, and export everything as Markdown.
 
-History is kept per Google account in the browser (IndexedDB). There is no server-side storage.
+No account is needed to read a file: *Upload a document* on the landing page reads it on your device. The AI
+analysis, chat and AI vision need a Google sign-in; whatever was read before signing in moves into the account.
+History is kept per Google account in the browser (IndexedDB); before sign-in it lasts only for the tab. There is
+no server-side storage.
 
 ## What it reads
 
@@ -36,6 +39,9 @@ npm install
 cp .env.example .env.local   # then fill in the values; the file explains where each one comes from
 npm run dev                  # http://localhost:3000 — the /api functions run inside the Vite dev server
 ```
+
+With no `.env.local` at all, reading files still works (*Upload a document*); sign-in and the AI stay off until
+`GOOGLE_CLIENT_ID` and `GEMINI_API_KEY` are set. `SESSION_SECRET` is optional in dev and required in production.
 
 ## Checks
 

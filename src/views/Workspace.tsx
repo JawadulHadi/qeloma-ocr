@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FileUp, Plus } from 'lucide-react';
+import { FileUp, LogIn, Plus } from 'lucide-react';
 import type { SessionUser } from '../../shared/types';
 import { useAuth } from '../auth';
 import { AnalysisPane } from '../components/AnalysisPane';
@@ -65,11 +65,18 @@ function useWindowDrop(onFile: (file: File) => void): boolean {
   return dragging;
 }
 
-/** The signed-in page: an upload panel, then the document and its analysis side by side. */
-export function Workspace({ user }: { user: SessionUser }) {
+interface WorkspaceProps {
+  /** null when nobody has signed in: files are still read on this device, but the AI needs a sign-in. */
+  user: SessionUser | null;
+  /** Takes someone who hasn't signed in to the sign-in page. */
+  onSignIn?(): void;
+}
+
+/** An upload panel, then the document and its analysis side by side. */
+export function Workspace({ user, onSignIn }: WorkspaceProps) {
   const { signOut } = useAuth();
   const controller = useConversation(user);
-  const { state, history, startFile, cancel, analyze, updateText } = controller;
+  const { guest, state, history, startFile, cancel, analyze, updateText } = controller;
   const { phase, conversation, error } = state;
   const wide = useMediaQuery('(min-width: 1024px)');
   const narrowHeader = useMediaQuery('(max-width: 639px)');
@@ -131,19 +138,26 @@ export function Workspace({ user }: { user: SessionUser }) {
           </>
         }
         end={
-          <UserMenu
-            user={user}
-            hasHistory={history.length > 0}
-            onExportAll={() => void controller.exportAll()}
-            onClearHistory={() => void controller.clearHistory()}
-            onSignOut={() => void signOut()}
-          />
+          user ? (
+            <UserMenu
+              user={user}
+              hasHistory={history.length > 0}
+              onExportAll={() => void controller.exportAll()}
+              onClearHistory={() => void controller.clearHistory()}
+              onSignOut={() => void signOut()}
+            />
+          ) : (
+            <button type="button" className="btn btn-sm" onClick={onSignIn}>
+              <LogIn size={16} aria-hidden="true" />
+              Sign in
+            </button>
+          )
         }
       />
 
       <main className="workspace" id="main">
         {showUpload ? (
-          <UploadPanel onFile={onFile} error={phase === 'error' ? (error?.message ?? null) : null} />
+          <UploadPanel guest={guest} onFile={onFile} error={phase === 'error' ? (error?.message ?? null) : null} />
         ) : (
           <div className="work">
             {!wide && (
@@ -174,7 +188,7 @@ export function Workspace({ user }: { user: SessionUser }) {
                 textEdited={conversation?.textEdited ?? false}
                 preview={state.preview}
                 progress={state.progress}
-                showAnalyzeAction={!wide && phase === 'review'}
+                showAnalyzeAction={!guest && !wide && phase === 'review'}
                 onCancel={cancel}
                 onSaveText={saveText}
                 onAnalyze={() => void analyze()}
@@ -189,6 +203,7 @@ export function Workspace({ user }: { user: SessionUser }) {
               hidden={!wide && tab !== 'analysis'}
             >
               <AnalysisPane
+                guest={guest}
                 phase={phase}
                 conversation={conversation}
                 analyzeError={error?.stage === 'analyze' ? error.message : null}

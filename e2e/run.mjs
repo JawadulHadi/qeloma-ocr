@@ -75,6 +75,47 @@ async function mockApi(page) {
   });
 }
 
+/**
+ * Signed out, with sign-in not configured (a fresh deploy): "Upload a document" must still reach the upload
+ * screen, read a file on the device, and ask for a sign-in instead of calling the AI. Returns the failure count.
+ */
+async function checkGuest(browser, url, file, screens) {
+  const context = await browser.newContext({ viewport: { width: 1360, height: 900 } });
+  const page = await context.newPage();
+  const aiCalls = [];
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
+    if (path === '/api/auth/config') return json({ googleClientId: null, aiConfigured: false, model: 'gemini-e2e' });
+    if (path === '/api/auth/me') return json({ error: { code: 'unauthorized', message: 'Sign in first.' } }, 401);
+    aiCalls.push(path);
+    return json({ error: { code: 'unauthorized', message: 'Sign in first.' } }, 401);
+  });
+  try {
+    await page.goto(url);
+    await page.getByRole('button', { name: 'Upload a document' }).click();
+    await page.locator('input[type=file]').setInputFiles(file);
+    await page.locator('.signin-callout').waitFor({ timeout: 30_000 });
+    const docText = (await page.locator('#doc-text').innerText()).toLowerCase();
+    await page.screenshot({ path: join(screens, 'guest-workspace.png') });
+    const problems = [];
+    if (!docText.includes('fix the boiler')) problems.push('the text was not read');
+    if (aiCalls.length > 0) problems.push(`called ${aiCalls.join(', ')} without a sign-in`);
+    if (problems.length > 0) {
+      console.log(`  FAIL  upload without sign-in: ${problems.join('; ')}`);
+      return 1;
+    }
+    console.log('  ok    upload without sign-in');
+    return 0;
+  } catch (err) {
+    console.log(`  FAIL  upload without sign-in: ${err instanceof Error ? err.message.split('\n')[0] : err}`);
+    await page.screenshot({ path: join(screens, 'fail-guest.png'), fullPage: true });
+    return 1;
+  } finally {
+    await context.close();
+  }
+}
+
 async function readFixture(page, url, file, expected) {
   await page.goto(url);
   // On-device only, and analyze straight away: deterministic and offline-safe for the AI part.
@@ -146,7 +187,7 @@ async function main() {
   page.on('pageerror', (err) => pageErrors.push(err.message));
   await mockApi(page);
 
-  let failures = 0;
+  let failures = await checkGuest(browser, url, fixtures['notes.txt'], screens);
   for (const [name, expected] of CASES) {
     const started = Date.now();
     let problems;

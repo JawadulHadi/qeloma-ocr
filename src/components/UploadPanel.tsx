@@ -13,7 +13,16 @@ const MODE_HELP: Record<EngineMode, string> = {
   ai: 'The AI reads images and scanned pages directly. Best for handwriting and messy scans.',
 };
 
+/** Without a sign-in nothing is sent to the AI, so Auto reads on the device only and AI vision is unavailable. */
+const GUEST_MODE_HELP: Record<EngineMode, string> = {
+  auto: 'Reads on your device. Sign in to let the AI re-read unclear images.',
+  local: MODE_HELP.local,
+  ai: 'AI vision needs you to sign in. Text-based PDFs and Office files are still read on your device.',
+};
+
 interface UploadPanelProps {
+  /** Nobody has signed in: files are read on this device and history lasts only for this tab. */
+  guest: boolean;
   onFile(file: File): void;
   /** Why the last file couldn't be read. */
   error: string | null;
@@ -33,7 +42,7 @@ function pastedImage(event: ClipboardEvent): File | null {
 }
 
 /** The empty workspace: a big drop zone, the supported types, and how to read the file. */
-export function UploadPanel({ onFile, error }: UploadPanelProps) {
+export function UploadPanel({ guest, onFile, error }: UploadPanelProps) {
   const [prefs, setPrefs] = usePrefs();
   const inputRef = useRef<HTMLInputElement>(null);
   const modeHelpId = useId();
@@ -132,7 +141,7 @@ export function UploadPanel({ onFile, error }: UploadPanelProps) {
             ]}
           />
           <p className="option-help" id={modeHelpId} aria-live="polite">
-            {MODE_HELP[prefs.mode]}
+            {(guest ? GUEST_MODE_HELP : MODE_HELP)[prefs.mode]}
           </p>
         </div>
 
@@ -170,7 +179,11 @@ export function UploadPanel({ onFile, error }: UploadPanelProps) {
         </div>
       </div>
 
-      {!isPersistent() && <p className="upload-note">History isn’t saved in this browser window.</p>}
+      {guest ? (
+        <p className="upload-note">You’re not signed in, so documents are kept only until you close this tab.</p>
+      ) : (
+        !isPersistent() && <p className="upload-note">History isn’t saved in this browser window.</p>
+      )}
     </div>
   );
 }

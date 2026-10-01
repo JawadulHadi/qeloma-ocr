@@ -1,4 +1,4 @@
-import { ShieldCheck, TriangleAlert } from 'lucide-react';
+import { FileUp, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { GoogleSignInButton, useAuth } from '../auth';
 import { AppHeader } from '../components/AppHeader';
 import { useTheme } from '../theme';
@@ -13,8 +13,8 @@ const STEPS = [
   },
 ];
 
-/** The signed-out page: what Scanwise does, a live specimen, and the way in. */
-export function Landing() {
+/** The signed-out page: what Scanwise does, a live specimen, and the two ways in. */
+export function Landing({ onStart }: { onStart(): void }) {
   const { error } = useAuth();
   const { theme } = useTheme();
 
@@ -37,8 +37,15 @@ export function Landing() {
                 <p className="alert-body">{error}</p>
               </div>
             )}
-            <div className="hero-signin">
-              <GoogleSignInButton mode={theme.mode} width={300} />
+            <div className="hero-actions">
+              <button type="button" className="btn btn-primary hero-start" onClick={onStart}>
+                <FileUp size={20} aria-hidden="true" />
+                Upload a document
+              </button>
+              <p className="hero-or">No account needed to read a file. Sign in for the AI analysis, chat and saved history:</p>
+              <div className="hero-signin">
+                <GoogleSignInButton mode={theme.mode} width={300} />
+              </div>
             </div>
             <p className="hero-privacy">
               <ShieldCheck size={16} aria-hidden="true" />

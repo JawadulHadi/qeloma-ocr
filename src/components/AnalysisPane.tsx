@@ -2,13 +2,17 @@ import type { ReactNode } from 'react';
 import { CircleHelp, Download, Info, RotateCcw, Sparkles, TriangleAlert } from 'lucide-react';
 import type { Analysis, Importance, KeyFactor } from '../../shared/types';
 import { MAX_ANALYZE_CHARS } from '../../shared/limits';
+import { GoogleSignInButton } from '../auth';
 import type { Phase, WorkspaceState } from '../hooks/useConversation';
 import type { Conversation } from '../lib/store';
 import { usePrefs } from '../lib/prefs';
+import { useTheme } from '../theme';
 import { ChatPanel } from './ChatPanel';
 import { capitalize, formatCount } from './format';
 
 interface AnalysisPaneProps {
+  /** Nobody has signed in, so the text can't be sent for analysis yet. */
+  guest: boolean;
   phase: Phase;
   conversation: Conversation | null;
   /** Message of a failed analysis, when phase is 'error'. */
@@ -24,6 +28,7 @@ interface AnalysisPaneProps {
 const IMPORTANCE_RANK: Record<Importance, number> = { high: 0, medium: 1, low: 2 };
 
 export function AnalysisPane({
+  guest,
   phase,
   conversation,
   analyzeError,
@@ -39,7 +44,7 @@ export function AnalysisPane({
 
   let body: ReactNode;
   if (phase === 'preparing' || phase === 'extracting') {
-    body = <Waiting />;
+    body = <Waiting guest={guest} />;
   } else if (phase === 'analyzing') {
     body = <Analyzing onCancel={onCancel} />;
   } else if (phase === 'error') {
@@ -62,6 +67,8 @@ export function AnalysisPane({
     );
   } else if (analysis && conversation) {
     body = <Report conversation={conversation} analysis={analysis} onExport={onExport} />;
+  } else if (guest) {
+    body = <SignInToAnalyze />;
   } else {
     body = <Review text={conversation?.text ?? ''} onAnalyze={onAnalyze} />;
   }
@@ -74,17 +81,33 @@ export function AnalysisPane({
   );
 }
 
-function Waiting() {
+function Waiting({ guest }: { guest: boolean }) {
   const [prefs] = usePrefs();
+  let text = 'The analysis starts as soon as the text is read.';
+  if (guest) text = 'Once the text is read, sign in to have it analyzed.';
+  else if (prefs.reviewBeforeAnalysis) text = 'Once the text is read, you can check it before it’s analyzed.';
   return (
     <div className="analysis-waiting">
       <h2 className="pane-label">Analysis</h2>
-      <p>
-        {prefs.reviewBeforeAnalysis
-          ? 'Once the text is read, you can check it before it’s analyzed.'
-          : 'The analysis starts as soon as the text is read.'}
-      </p>
+      <p>{text}</p>
     </div>
+  );
+}
+
+function SignInToAnalyze() {
+  const { theme } = useTheme();
+  return (
+    <>
+      <h2 className="pane-label">Analysis</h2>
+      <div className="callout callout-accent signin-callout">
+        <p className="callout-title">Sign in to analyze this text.</p>
+        <p>
+          The text was read on your device and hasn’t been sent anywhere. Sign in with Google for the summary, key
+          factors, solutions and follow-up questions. This document stays open after you sign in.
+        </p>
+        <GoogleSignInButton mode={theme.mode} />
+      </div>
+    </>
   );
 }
 

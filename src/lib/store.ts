@@ -42,6 +42,9 @@ export interface ConversationSummary {
   messageCount: number;
 }
 
+/** Owner of documents read without signing in. They are kept in memory only, never written to disk. */
+export const GUEST_ID = 'guest';
+
 // History is kept in IndexedDB, one database per Google account. When IndexedDB is missing or fails
 // (private windows, blocked site data), everything falls back to memory for the rest of the session.
 let persistent = typeof indexedDB !== 'undefined';
@@ -76,7 +79,7 @@ async function withStorage<T>(
   inDatabase: (store: UseStore) => Promise<T>,
   inMemory: (map: Map<string, Conversation>) => T,
 ): Promise<T> {
-  if (persistent) {
+  if (persistent && userId !== GUEST_ID) {
     try {
       return await inDatabase(databaseFor(userId));
     } catch {
@@ -167,6 +170,20 @@ export async function deleteConversation(userId: string, id: string): Promise<vo
       map.delete(id);
     },
   );
+}
+
+/**
+ * Moves the documents read in this tab before signing in into the account that just signed in.
+ * Returns the id of the most recent one, or null when there were none.
+ */
+export async function adoptGuestConversations(userId: string): Promise<string | null> {
+  const guest = memory.get(GUEST_ID);
+  if (!guest || guest.size === 0 || userId === GUEST_ID) return null;
+  const adopted = [...guest.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+  // Cleared before the first await, so a second call while this one runs finds nothing to adopt.
+  guest.clear();
+  for (const c of adopted) await saveConversation({ ...c, userId });
+  return adopted[0].id;
 }
 
 export async function clearConversations(userId: string): Promise<void> {

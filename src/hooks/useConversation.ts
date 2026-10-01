@@ -4,6 +4,7 @@ import type { ChatTurn, DocumentMeta, FileKind, SessionUser } from '../../shared
 import { analyzeText, errorMessage, isAbortError, readWithVision, streamChat, ApiError } from '../lib/api';
 import { downloadMarkdown } from '../lib/download';
 import {
+  AI_VISION_MISSING,
   ExtractionAbortedError,
   UnsupportedFileError,
   detectFile,
@@ -16,6 +17,8 @@ import {
 import { conversationToMarkdown, conversationsToMarkdown, markdownFilename } from '../lib/markdown';
 import { readPrefs } from '../lib/prefs';
 import {
+  GUEST_ID,
+  adoptGuestConversations,
   clearConversations,
   deleteConversation,
   getAllConversations,
@@ -67,6 +70,7 @@ const EMPTY_STATE: WorkspaceState = {
 const READ_FAILED = "Couldn't read this file. Try another file or set Reading to AI vision.";
 const ANALYZE_FAILED = "Couldn't analyze the text. Try again.";
 const CHAT_FAILED = "Couldn't get an answer. Try again.";
+const VISION_NEEDS_SIGN_IN = 'AI vision needs you to sign in. Sign in, or set Reading to On-device and try again.';
 const EMPTY_ANSWER = "The AI didn't answer. Try asking again.";
 const STOPPED_SUFFIX = ' _(stopped)_';
 const SAVE_DELAY_MS = 500;
@@ -129,7 +133,8 @@ function newId(): string {
 
 // ---- The controller ---------------------------------------------------------------------------------
 
-export function useConversation(user: SessionUser) {
+/** `user` is null for someone who hasn't signed in: files are read on the device and nothing goes to the AI. */
+export function useConversation(user: SessionUser | null) {
   const [state, setState] = useState<WorkspaceState>(EMPTY_STATE);
   const [history, setHistory] = useState<ConversationSummary[]>([]);
   // The latest state, readable from async work without waiting for a render.
@@ -138,7 +143,10 @@ export function useConversation(user: SessionUser) {
   const operation = useRef<AbortController | null>(null);
   const chatOperation = useRef<AbortController | null>(null);
   const saveTimer = useRef<number | null>(null);
-  const userId = user.id;
+  const userId = user?.id ?? GUEST_ID;
+  const guest = user === null;
+  /** Documents read before signing in, moved into this account; started once per mount. */
+  const adoption = useRef<Promise<string | null> | null>(null);
 
   const update = useCallback((patch: Partial<WorkspaceState>) => {
     const current = stateRef.current;
@@ -204,10 +212,6 @@ export function useConversation(user: SessionUser) {
     chatOperation.current = null;
   }, []);
 
-  useEffect(() => {
-    void refreshHistory();
-  }, [refreshHistory]);
-
   useEffect(
     () => () => {
       operation.current?.abort();
@@ -221,7 +225,7 @@ export function useConversation(user: SessionUser) {
 
   const analyze = useCallback(async () => {
     const c = stateRef.current.conversation;
-    if (!c || !c.text.trim()) return;
+    if (guest || !c || !c.text.trim()) return;
     flushPendingSave();
     const controller = beginOperation();
     update({ phase: 'analyzing', error: null });
@@ -246,7 +250,7 @@ export function useConversation(user: SessionUser) {
       operation.current = null;
       update({ phase: 'error', error: { stage: 'analyze', message: errorMessage(err, ANALYZE_FAILED) } });
     }
-  }, [beginOperation, commit, flushPendingSave, update]);
+  }, [beginOperation, commit, flushPendingSave, guest, update]);
 
   const startFile = useCallback(
     async (file: File) => {
@@ -277,7 +281,7 @@ export function useConversation(user: SessionUser) {
         const extraction = await extractText(file, {
           mode: prefs.mode,
           language: prefs.language,
-          vision: readWithVision,
+          vision: guest ? undefined : readWithVision,
           signal,
           onProgress: (progress) => {
             if (operation.current === controller) update({ progress });
@@ -310,20 +314,18 @@ export function useConversation(user: SessionUser) {
           messages: [],
           source: file.size <= MAX_STORED_SOURCE_BYTES ? file : null,
         };
-        const review = prefs.reviewBeforeAnalysis || !conversation.text.trim();
+        const review = guest || prefs.reviewBeforeAnalysis || !conversation.text.trim();
         commit(conversation, { phase: review ? 'review' : 'analyzing', progress: null, pendingFile: null });
         if (!review) await analyze();
       } catch (err) {
         if (operation.current !== controller || isCancellation(err)) return;
         operation.current = null;
-        update({
-          ...EMPTY_STATE,
-          phase: 'error',
-          error: { stage: 'extract', message: extractionErrorMessage(err) },
-        });
+        const needsSignIn = guest && err instanceof Error && err.message === AI_VISION_MISSING;
+        const message = needsSignIn ? VISION_NEEDS_SIGN_IN : extractionErrorMessage(err);
+        update({ ...EMPTY_STATE, phase: 'error', error: { stage: 'extract', message } });
       }
     },
-    [analyze, beginOperation, commit, flushPendingSave, stopChat, update, userId],
+    [analyze, beginOperation, commit, flushPendingSave, guest, stopChat, update, userId],
   );
 
   const cancel = useCallback(() => {
@@ -440,6 +442,20 @@ export function useConversation(user: SessionUser) {
     [beginOperation, flushPendingSave, refreshHistory, stopChat, update, userId],
   );
 
+  // Loads the history, after first bringing in anything read in this tab before signing in, and opens that.
+  useEffect(() => {
+    let active = true;
+    adoption.current ??= guest ? Promise.resolve(null) : adoptGuestConversations(userId).catch(() => null);
+    void adoption.current.then(async (adoptedId) => {
+      if (!active) return;
+      await refreshHistory();
+      if (adoptedId && active) await open(adoptedId);
+    });
+    return () => {
+      active = false;
+    };
+  }, [guest, open, refreshHistory, userId]);
+
   const reset = useCallback(() => {
     operation.current?.abort();
     operation.current = null;
@@ -481,6 +497,7 @@ export function useConversation(user: SessionUser) {
   }, [flushPendingSave, userId]);
 
   return {
+    guest,
     state,
     history,
     startFile,

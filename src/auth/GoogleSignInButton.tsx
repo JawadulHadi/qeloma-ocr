@@ -10,7 +10,8 @@ import {
 } from './googleIdentity';
 import { useAuth } from './useAuth';
 
-const NOT_CONFIGURED = "Sign-in isn't set up yet. Add GOOGLE_CLIENT_ID to the server environment.";
+// /api/auth/config withholds the client id when either variable is missing in production, so name both.
+const NOT_CONFIGURED = "Sign-in isn't set up on this server yet. It needs GOOGLE_CLIENT_ID and SESSION_SECRET.";
 const CONFIG_UNAVAILABLE = "Sign-in couldn't load. Check your connection and reload the page.";
 const SIGN_IN_FAILED = "Couldn't sign you in. Try again.";
 
