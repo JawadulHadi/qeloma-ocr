@@ -1,14 +1,14 @@
 {
   "compilerOptions": {
-    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.api.tsbuildinfo",
     "target": "es2023",
     "lib": ["ES2023"],
     "types": ["node"],
     "skipLibCheck": true,
 
-    /* Bundler mode */
+    /* Vercel runs these as native ESM: relative imports need explicit .js extensions. */
     "module": "nodenext",
-    "allowImportingTsExtensions": true,
+    "moduleResolution": "nodenext",
     "verbatimModuleSyntax": true,
     "moduleDetection": "force",
     "noEmit": true,
@@ -20,5 +20,6 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "server/dev-plugin.ts"]
+  "include": ["api", "server", "shared"],
+  "exclude": ["server/dev-plugin.ts"]
 }
