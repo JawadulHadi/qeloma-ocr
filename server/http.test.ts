@@ -6,7 +6,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function post(body: BodyInit | null, headers: Record<string, string> = {}): Request {
+// BodyInit is a DOM global; tsconfig.api.json has no DOM lib, so take the type from RequestInit instead.
+function post(body: RequestInit['body'], headers: Record<string, string> = {}): Request {
   return new Request(`${ORIGIN}/api/test`, { method: 'POST', body, headers, duplex: 'half' } as RequestInit);
 }
 

@@ -62,7 +62,7 @@ export function DocumentPane(props: DocumentPaneProps) {
         <h2 className="pane-label">Document</h2>
         {file && <FileChip file={file} extraction={extraction} />}
         {tabbed && (
-          <Tabs
+          <Tabs<View>
             label="Document view"
             value={view}
             onChange={setChosenView}

@@ -1,3 +1,4 @@
+import { createElement } from 'react';
 import { File, FileImage, FileSpreadsheet, FileText, FileType, Presentation, type LucideIcon } from 'lucide-react';
 import type { FileKind } from '../../shared/types';
 
@@ -19,6 +20,5 @@ function iconFor(kind: FileKind | undefined, mimeType: string): LucideIcon {
 }
 
 export function FileIcon({ kind, mimeType = '', size = 18 }: { kind?: FileKind; mimeType?: string; size?: number }) {
-  const Icon = iconFor(kind, mimeType);
-  return <Icon size={size} aria-hidden="true" />;
+  return createElement(iconFor(kind, mimeType), { size, 'aria-hidden': true });
 }
