@@ -13,6 +13,10 @@ export default defineConfig({
     port: 3000,
     allowedHosts: true,
   },
+  build: {
+    // The largest chunk is the HEIC decoder (~1.3 MB), which loads only when someone opens a HEIC photo.
+    chunkSizeWarningLimit: 1400,
+  },
   optimizeDeps: {
     // pdf.js ships its own worker; tesseract.js loads its worker/core from a CDN at runtime.
     exclude: ['pdfjs-dist'],

@@ -1,52 +1,57 @@
-# QelomaOCR
+# Scanwise
 
-Read text from any image — and **see how sure the machine is**, word by word.
-Part of the Qeloma suite. Runs on free tiers, with a genuinely private default path.
+Upload a document — a phone photo, a scan, a PDF, an Office file — and Scanwise tells you what it says and
+what to do about it.
 
-## Three modes, one honest result
+1. **Extract.** The text is read in your browser, with a confidence score for every word (green, amber, red).
+2. **Understand.** Gemini turns the text into a summary, key factors, key points, open questions and caveats.
+3. **Act.** Solutions are marked *in the document* or *suggested*. Ask follow-up questions in a chat grounded in
+   the text, and export everything as Markdown.
 
-| Mode | Engine | Best for | Cost |
-|------|--------|----------|------|
-| **Fast** | Tesseract.js (WASM, in-browser) | Clean printed docs, forms, invoices. Private + offline. | **Free** |
-| **Smart** | Gemini vision (your key) | Handwriting, tables, messy scans, layout understanding. | Your Gemini key |
-| **Auto** | Fast first → AI only if unclear | Cheapest accurate path. | Free unless it escalates |
+History is kept per Google account in the browser (IndexedDB). There is no server-side storage.
 
-The engine **never fabricates**. Fast mode reports exactly what Tesseract saw, with
-per-word confidence. If a word is illegible in AI mode, it returns `[illegible]` rather
-than guessing. In Auto mode, if confidence is low and no key is present, it says so
-instead of inventing a "smarter" answer.
+## What it reads
 
-## The signature: confidence you can see
-Every word is tinted by how confident the read is — green (high), amber (medium),
-red + underline (low). You always know which parts to trust. Toggle to plain text to copy.
+| Family | Formats | How |
+| --- | --- | --- |
+| Images | PNG, JPEG, WebP, HEIC/HEIF, TIFF (every page), GIF, BMP, AVIF, SVG | On-device OCR (tesseract.js), or Gemini vision |
+| PDF | Digital and scanned | pdf.js text layer; scanned pages are OCR'd (up to 40) |
+| Office & OpenDocument | DOCX, PPTX, XLSX, ODT, ODP, ODS, EPUB, RTF | Unzipped and parsed in the browser |
+| Text & web | TXT, Markdown, CSV, JSON, HTML, XML, YAML | Read directly |
 
-## Zero-cost by design
-- **Fast mode** runs entirely in your browser via WebAssembly — no server, no API, no
-  per-page cost, and your document never leaves the device.
-- **Smart mode** uses **your own** Gemini API key (free-tier eligible). The key stays in
-  your browser; it is never sent anywhere but Google.
-- **Hosting:** static SPA on Vercel Hobby (free).
-
-## Run locally
-```bash
-npm install
-npm run dev
-```
-
-## Deploy (Vercel, free)
-1. Import this folder as a Vercel project (framework auto-detects Vite).
-2. Deploy. No env vars required — Fast mode works out of the box; users paste their own
-   Gemini key in the UI for Smart/Auto.
-
-## How it fits the suite
-QelomaOCR's output is designed to feed **QelomaLens** — extract text here, then run
-SUMMARIZE / EXTRACT_FACTS / VERDICT on it. OCR is the front door; Lens is the brain.
-
-## Verified
-- Tesseract.js proven headless (94% confidence on a test doc).
-- Typecheck clean, production `vite build` succeeds.
-- End-to-end in headless Chromium: upload → read → text + per-word confidence, light
-  and dark themes, zero console errors.
+**Reading** has three modes: *Auto* (on-device, with the AI re-reading only low-confidence images),
+*On-device* (the file never leaves the browser) and *AI vision* (best for handwriting and messy scans).
+Only the extracted text is sent for analysis, unless AI vision is chosen.
 
 ## Stack
-React 19 + TypeScript + Vite · tesseract.js (local) · @google/genai (AI) · Qeloma theming.
+
+React 19 + TypeScript + Vite 8, Vercel functions in `api/` (Web-standard handlers), Google Identity Services
+sign-in with an HttpOnly JWT session cookie (`jose`), Gemini via `@google/genai`, tesseract.js, pdf.js,
+fflate, utif2, heic2any.
+
+## Run locally
+
+```bash
+npm install
+cp .env.example .env.local   # then fill in the values; the file explains where each one comes from
+npm run dev                  # http://localhost:3000 — the /api functions run inside the Vite dev server
+```
+
+## Checks
+
+```bash
+npm run typecheck            # browser, server and config TypeScript projects
+npm test                     # unit tests (vitest)
+npm run lint                 # oxlint
+npm run build && npm run test:e2e   # real browser run of the production build over every file type
+```
+
+The end-to-end run mocks the `/api` routes (signed-in user, analysis, chat), so it needs no keys. On-device OCR
+downloads its engine and language data from jsDelivr the first time, so it does need a network connection.
+
+## Deploy (Vercel)
+
+Import the repository; Vite is detected and `vercel.json` sets the function timeouts and security headers.
+Add `GOOGLE_CLIENT_ID`, `GEMINI_API_KEY` and `SESSION_SECRET` (optionally `GEMINI_MODEL`) under
+Project → Settings → Environment Variables, and add the production URL to the OAuth client's
+*Authorized JavaScript origins*.
