@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# Test output
+test-results
+e2e/.artifacts
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -25,3 +29,4 @@ dist-ssr
 
 .vercel
 .env*
+!.env.example

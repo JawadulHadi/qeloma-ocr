@@ -1,14 +1,37 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-mode="dark" data-accent="amber" data-surface="glass">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Qeloma OCR - Read anything with confidence scores</title>
-    <meta name="description" content="Read anything with local Tesseract WASM and Gemini vision, with confidence scores and structured field extraction." />
-    <meta property="og:title" content="Qeloma OCR" />
-    <meta property="og:description" content="Read anything with local Tesseract WASM and Gemini vision, with confidence scores and structured field extraction." />
-      <script>(function(){try{var t=localStorage.getItem("ql-theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();</script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Scanwise — understand any document</title>
+    <meta name="description" content="Upload a photo, scan, PDF or Office file. Scanwise extracts the text with visible confidence, then explains the key factors, key points and your options." />
+    <meta property="og:title" content="Scanwise" />
+    <meta property="og:description" content="Upload any document. Get its text, the key factors, and what you can do about it." />
+    <!-- THEME PRE-PAINT (owned by src/theme): apply the saved theme before first paint to avoid a flash. -->
+    <style>
+      html[data-mode='dark'] { background: #0d0f14; color-scheme: dark; }
+      html[data-mode='light'] { background: #eef0f4; color-scheme: light; }
+    </style>
+    <script>
+      (function () {
+        var d = document.documentElement;
+        var t = null;
+        try { t = JSON.parse(localStorage.getItem('scanwise.theme') || 'null'); } catch (e) {}
+        var modes = ['dark', 'light'];
+        var accents = ['amber', 'blue', 'violet', 'magenta', 'graphite'];
+        var surfaces = ['solid', 'glass'];
+        var prefersLight = false;
+        try { prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches; } catch (e) {}
+        var mode = t && modes.indexOf(t.mode) >= 0 ? t.mode : (prefersLight ? 'light' : 'dark');
+        var accent = t && accents.indexOf(t.accent) >= 0 ? t.accent : 'amber';
+        var surface = t && surfaces.indexOf(t.surface) >= 0 ? t.surface : 'glass';
+        d.setAttribute('data-mode', mode);
+        d.setAttribute('data-accent', accent);
+        d.setAttribute('data-surface', surface);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

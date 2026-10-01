@@ -1,12 +1,24 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { apiDevPlugin } from './server/dev-plugin.ts'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  // apiDevPlugin serves the Vercel functions in /api during `npm run dev`,
+  // so the whole app (auth + AI) runs locally without the Vercel CLI.
+  plugins: [react(), apiDevPlugin()],
   server: {
     host: '0.0.0.0',
     port: 3000,
     allowedHosts: true,
+  },
+  optimizeDeps: {
+    // pdf.js ships its own worker; tesseract.js loads its worker/core from a CDN at runtime.
+    exclude: ['pdfjs-dist'],
+  },
+  test: {
+    include: ['src/**/*.test.{ts,tsx}', 'server/**/*.test.ts', 'api/**/*.test.ts', 'shared/**/*.test.ts'],
+    environment: 'node',
   },
 })

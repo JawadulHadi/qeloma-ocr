@@ -1,6 +1,6 @@
 {
-  "name": "Qeloma OCR",
-  "description": "Read anything with local Tesseract WASM and Gemini vision, with confidence scores and structured field extraction.",
+  "name": "Scanwise",
+  "description": "Upload any document — photo, scan, PDF or Office file. Scanwise extracts the text with visible confidence, then explains the key factors, key points and solutions.",
   "capabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
