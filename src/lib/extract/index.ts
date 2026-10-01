@@ -14,6 +14,7 @@ import { decodeText, textFileToText, visibleLength } from './text';
 import type { DetectedFile, ExtractionResult, ExtractOptions, FilePreview } from './types';
 
 export * from './types';
+export { AI_VISION_MISSING } from './assemble';
 export { ACCEPT_ATTR, SUPPORTED_GROUPS, detectFile } from './detect';
 export { OCR_LANGUAGES } from './ocr';
 

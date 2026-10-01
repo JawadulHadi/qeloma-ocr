@@ -3,8 +3,20 @@
 /** Largest file a user can upload for extraction (processed in the browser). */
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-/** Largest extracted text the server will analyze; longer text is truncated and flagged. */
+/** Most text the server analyzes or chats over, across all sources; longer text is truncated and flagged. */
 export const MAX_ANALYZE_CHARS = 120_000;
+
+/** Most sources in one conversation, and in one request. */
+export const MAX_SOURCES = 25;
+
+/** Most files taken from one ZIP archive. */
+export const MAX_ZIP_ENTRIES = MAX_SOURCES;
+
+/** Most bytes unpacked from one ZIP archive, so a small archive can't expand into gigabytes. */
+export const MAX_ZIP_UNPACKED_BYTES = 200 * 1024 * 1024;
+
+/** Longest passage quoted from a source into a chat question. */
+export const MAX_QUOTE_CHARS = 1_500;
 
 /** Longest single chat question. */
 export const MAX_QUESTION_CHARS = 4_000;
@@ -17,6 +29,12 @@ export const MAX_CHAT_TURN_CHARS = 8_000;
 
 /** Base64 length cap for /api/vision (≈3 MB of image bytes; Vercel bodies max out at 4.5 MB). */
 export const MAX_VISION_BASE64_CHARS = 4_000_000;
+
+/** Base64 length cap for /api/transcribe (≈3 MB of audio, far more than MAX_RECORDING_SECONDS needs). */
+export const MAX_AUDIO_BASE64_CHARS = 4_000_000;
+
+/** Longest voice recording sent for transcription. */
+export const MAX_RECORDING_SECONDS = 120;
 
 /** Longest edge, in pixels, of an image sent to /api/vision (the browser downsizes first). */
 export const VISION_MAX_EDGE_PX = 2000;

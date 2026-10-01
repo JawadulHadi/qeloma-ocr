@@ -1,9 +1,9 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { AuthProvider, useAuth } from './auth';
 import { Wordmark } from './components/Wordmark';
 import { Landing } from './views/Landing';
 
-// The workspace (extraction, analysis, chat) loads only once someone is signed in.
+// The workspace (extraction, analysis, chat) loads only once someone signs in or chooses to upload without signing in.
 const Workspace = lazy(() => import('./views/Workspace').then((module) => ({ default: module.Workspace })));
 
 export default function App() {
@@ -16,8 +16,12 @@ export default function App() {
 
 function Shell() {
   const { status, user } = useAuth();
+  /** Chose to upload without signing in. Documents read this way move into the account on sign-in. */
+  const [guest, setGuest] = useState(false);
   if (status === 'loading') return <Loading />;
   if (status === 'signed-in' && user) {
+    // Signing out later should land on the landing page, not back in the guest workspace.
+    if (guest) setGuest(false);
     return (
       <Suspense fallback={<Loading />}>
         {/* Keyed by account so nothing from one person's workspace survives into another's. */}
@@ -25,7 +29,14 @@ function Shell() {
       </Suspense>
     );
   }
-  return <Landing />;
+  if (guest) {
+    return (
+      <Suspense fallback={<Loading />}>
+        <Workspace key="guest" user={null} onSignIn={() => setGuest(false)} />
+      </Suspense>
+    );
+  }
+  return <Landing onStart={() => setGuest(true)} />;
 }
 
 function Loading() {

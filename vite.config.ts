@@ -16,6 +16,10 @@ export default defineConfig({
   build: {
     // The largest chunk is the HEIC decoder (~1.3 MB), which loads only when someone opens a HEIC photo.
     chunkSizeWarningLimit: 1400,
+    rolldownOptions: {
+      // auth/microsoft.html receives the OneDrive sign-in pop-up's result.
+      input: { main: 'index.html', microsoft: 'auth/microsoft.html' },
+    },
   },
   optimizeDeps: {
     // pdf.js ships its own worker; tesseract.js loads its worker/core from a CDN at runtime.

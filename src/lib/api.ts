@@ -1,4 +1,4 @@
-import { MAX_VISION_BASE64_CHARS } from '../../shared/limits';
+import { MAX_AUDIO_BASE64_CHARS, MAX_VISION_BASE64_CHARS } from '../../shared/limits';
 import type {
   AnalyzeRequest,
   AnalyzeResponse,
@@ -8,6 +8,8 @@ import type {
   GoogleSignInRequest,
   SessionResponse,
   SessionUser,
+  TranscribeRequest,
+  TranscribeResponse,
   VisionRequest,
   VisionResponse,
 } from '../../shared/types';
@@ -30,6 +32,7 @@ const OFFLINE_MESSAGE = "Can't reach Scanwise. Check your connection and try aga
 const INTERRUPTED_MESSAGE = 'The answer was interrupted. Check your connection and ask again.';
 const UNEXPECTED_REPLY_MESSAGE = 'Scanwise got an unexpected reply from the server. Reload the page and try again.';
 const VISION_TOO_LARGE_MESSAGE = 'This image is too large for AI vision. Try a smaller or lower-resolution image.';
+const RECORDING_TOO_LARGE_MESSAGE = 'This recording is too long to transcribe. Keep it under two minutes.';
 
 /** Used when an error response has no JSON body (proxy errors, platform timeouts, dev server fallbacks). */
 const FALLBACK_ERRORS: Record<number, { code: string; message: string }> = {
@@ -165,7 +168,7 @@ export async function signOut(): Promise<void> {
 
 // ---- AI ---------------------------------------------------------------------------
 
-export async function analyzeText(req: AnalyzeRequest, signal?: AbortSignal): Promise<AnalyzeResponse> {
+export async function analyzeSources(req: AnalyzeRequest, signal?: AbortSignal): Promise<AnalyzeResponse> {
   return readJson<AnalyzeResponse>(await request('/api/analyze', { method: 'POST', body: req, signal, session: true }));
 }
 
@@ -233,3 +236,16 @@ export const readWithVision: VisionFn = async (image, { language, signal }) => {
   );
   return text;
 };
+
+/** Sends a voice recording for transcription (browsers without built-in speech recognition). */
+export async function transcribeRecording(audio: Blob, signal?: AbortSignal): Promise<string> {
+  if (Math.ceil(audio.size / 3) * 4 > MAX_AUDIO_BASE64_CHARS) {
+    throw new ApiError(413, 'payload_too_large', RECORDING_TOO_LARGE_MESSAGE);
+  }
+  const body: TranscribeRequest = { audio: await blobToBase64(audio), mimeType: audio.type || 'audio/webm' };
+  signal?.throwIfAborted();
+  const { text } = await readJson<TranscribeResponse>(
+    await request('/api/transcribe', { method: 'POST', body, signal, session: true }),
+  );
+  return text;
+}

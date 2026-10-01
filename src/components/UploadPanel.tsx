@@ -1,9 +1,11 @@
-import { useEffect, useId, useRef, type ChangeEvent } from 'react';
-import { FileUp, TriangleAlert } from 'lucide-react';
-import { MAX_UPLOAD_BYTES } from '../../shared/limits';
-import { ACCEPT_ATTR, OCR_LANGUAGES, SUPPORTED_GROUPS, type EngineMode } from '../lib/extract';
+import { useEffect, useId } from 'react';
+import { ClipboardType, Cloud, FileUp, HardDrive, TriangleAlert, X } from 'lucide-react';
+import { MAX_SOURCES, MAX_UPLOAD_BYTES } from '../../shared/limits';
+import type { ReadingItem } from '../hooks/useConversation';
+import { OCR_LANGUAGES, SUPPORTED_GROUPS, type EngineMode } from '../lib/extract';
 import { usePrefs } from '../lib/prefs';
 import { isPersistent } from '../lib/store';
+import { useFilePicker, type SourceActions } from './useFilePicker';
 import { formatBytes } from './format';
 import { Segmented } from './ui/Segmented';
 
@@ -13,10 +15,20 @@ const MODE_HELP: Record<EngineMode, string> = {
   ai: 'The AI reads images and scanned pages directly. Best for handwriting and messy scans.',
 };
 
+/** Without a sign-in nothing is sent to the AI, so Auto reads on the device only and AI vision is unavailable. */
+const GUEST_MODE_HELP: Record<EngineMode, string> = {
+  auto: 'Reads on your device. Sign in to let the AI re-read unclear images.',
+  local: MODE_HELP.local,
+  ai: 'AI vision needs you to sign in. Text-based PDFs and Office files are still read on your device.',
+};
+
 interface UploadPanelProps {
-  onFile(file: File): void;
-  /** Why the last file couldn't be read. */
-  error: string | null;
+  /** Nobody has signed in: files are read on this device and history lasts only for this tab. */
+  guest: boolean;
+  actions: SourceActions;
+  /** Files that couldn't be read, and why. */
+  failures: ReadingItem[];
+  onDismiss(id: string): void;
 }
 
 /** First image file on the clipboard, named so it reads well in history. */
@@ -32,10 +44,11 @@ function pastedImage(event: ClipboardEvent): File | null {
   return null;
 }
 
-/** The empty workspace: a big drop zone, the supported types, and how to read the file. */
-export function UploadPanel({ onFile, error }: UploadPanelProps) {
+/** The empty workspace: a big drop zone, the other ways to add sources, and how to read them. */
+export function UploadPanel({ guest, actions, failures, onDismiss }: UploadPanelProps) {
   const [prefs, setPrefs] = usePrefs();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const picker = useFilePicker(actions.onFiles);
+  const { onFiles } = actions;
   const modeHelpId = useId();
   const languageId = useId();
   const reviewId = useId();
@@ -43,62 +56,75 @@ export function UploadPanel({ onFile, error }: UploadPanelProps) {
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
       const target = event.target;
-      if (target instanceof HTMLElement && target.closest('input, textarea, [contenteditable="true"]')) return;
+      if (target instanceof HTMLElement && target.closest('input, textarea, [contenteditable="true"], dialog')) return;
       const file = pastedImage(event);
       if (!file) return;
       event.preventDefault();
-      onFile(file);
+      onFiles([file]);
     };
     window.addEventListener('paste', onPaste);
     return () => window.removeEventListener('paste', onPaste);
-  }, [onFile]);
-
-  const openPicker = () => inputRef.current?.click();
-
-  const onChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    // Reset so choosing the same file again still fires a change.
-    event.target.value = '';
-    if (file) onFile(file);
-  };
+  }, [onFiles]);
 
   return (
     <div className="upload">
-      {error && (
+      {failures.length > 0 && (
         <div className="alert alert-danger upload-error" role="alert">
           <TriangleAlert className="alert-icon" size={18} aria-hidden="true" />
           <div className="alert-body">
-            <p className="alert-title">This file couldn’t be read.</p>
-            <p>{error}</p>
-            <button type="button" className="btn btn-sm" onClick={openPicker}>
-              Choose another file
+            <p className="alert-title">{failures.length === 1 ? 'This file couldn’t be read.' : 'These files couldn’t be read.'}</p>
+            <ul className="upload-failures">
+              {failures.map((item) => (
+                <li key={item.id}>
+                  <span>
+                    <strong>{item.name}</strong> {item.error}
+                  </span>
+                  <button type="button" className="icon-btn" aria-label={`Dismiss ${item.name}`} onClick={() => onDismiss(item.id)}>
+                    <X aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <button type="button" className="btn btn-sm" onClick={picker.open}>
+              Choose other files
             </button>
           </div>
         </div>
       )}
 
-      <div className="dropzone panel" onClick={openPicker}>
+      <div className="dropzone panel" onClick={picker.open}>
         <span className="dropzone-lamp" aria-hidden="true" />
         <span className="dropzone-icon" aria-hidden="true">
           <FileUp size={28} />
         </span>
-        <h1 className="dropzone-title">Drop a document to read it</h1>
+        <h1 className="dropzone-title">Drop documents to read them</h1>
         <p className="dropzone-sub">
-          Photos, scans, PDFs, Office files and text, up to {formatBytes(MAX_UPLOAD_BYTES)}. You can also paste an image.
+          Photos, scans, PDFs, Office files and text, up to {formatBytes(MAX_UPLOAD_BYTES)} each. Add up to{' '}
+          {MAX_SOURCES} at once, or a .zip of them. You can also paste an image.
         </p>
         <button type="button" className="btn btn-primary">
-          Choose a file
+          Choose files
         </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept={ACCEPT_ATTR}
-          className="visually-hidden"
-          tabIndex={-1}
-          aria-hidden="true"
-          onChange={onChange}
-          onClick={(event) => event.stopPropagation()}
-        />
+        {picker.input}
+      </div>
+
+      <div className="upload-more" role="group" aria-label="Other ways to add sources">
+        {actions.onDrive && (
+          <button type="button" className="btn" onClick={actions.onDrive}>
+            <HardDrive size={18} aria-hidden="true" />
+            Google Drive
+          </button>
+        )}
+        {actions.onOneDrive && (
+          <button type="button" className="btn" onClick={actions.onOneDrive}>
+            <Cloud size={18} aria-hidden="true" />
+            OneDrive
+          </button>
+        )}
+        <button type="button" className="btn" onClick={actions.onPaste}>
+          <ClipboardType size={18} aria-hidden="true" />
+          Paste text
+        </button>
       </div>
 
       <dl className="supported" aria-label="Supported files">
@@ -132,7 +158,7 @@ export function UploadPanel({ onFile, error }: UploadPanelProps) {
             ]}
           />
           <p className="option-help" id={modeHelpId} aria-live="polite">
-            {MODE_HELP[prefs.mode]}
+            {(guest ? GUEST_MODE_HELP : MODE_HELP)[prefs.mode]}
           </p>
         </div>
 
@@ -170,7 +196,11 @@ export function UploadPanel({ onFile, error }: UploadPanelProps) {
         </div>
       </div>
 
-      {!isPersistent() && <p className="upload-note">History isn’t saved in this browser window.</p>}
+      {guest ? (
+        <p className="upload-note">You’re not signed in, so documents are kept only until you close this tab.</p>
+      ) : (
+        !isPersistent() && <p className="upload-note">History isn’t saved in this browser window.</p>
+      )}
     </div>
   );
 }

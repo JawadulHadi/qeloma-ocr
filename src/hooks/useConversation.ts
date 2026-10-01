@@ -1,75 +1,85 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { MAX_CHAT_HISTORY, MAX_CHAT_TURN_CHARS, MAX_STORED_SOURCE_BYTES } from '../../shared/limits';
-import type { ChatTurn, DocumentMeta, FileKind, SessionUser } from '../../shared/types';
-import { analyzeText, errorMessage, isAbortError, readWithVision, streamChat, ApiError } from '../lib/api';
+import { shareBudget } from '../../shared/budget';
+import {
+  MAX_ANALYZE_CHARS,
+  MAX_CHAT_HISTORY,
+  MAX_CHAT_TURN_CHARS,
+  MAX_QUESTION_CHARS,
+  MAX_QUOTE_CHARS,
+  MAX_SOURCES,
+  MAX_STORED_SOURCE_BYTES,
+} from '../../shared/limits';
+import type { ChatTurn, DocumentMeta, SessionUser, SourceInput } from '../../shared/types';
+import { analyzeSources, errorMessage, isAbortError, readWithVision, streamChat, ApiError } from '../lib/api';
+import { expandBundles, type SkippedFile } from '../lib/bundle';
 import { downloadMarkdown } from '../lib/download';
 import {
+  AI_VISION_MISSING,
   ExtractionAbortedError,
   UnsupportedFileError,
-  detectFile,
   extractText,
-  makePreview,
-  type DetectedFile,
   type ExtractProgress,
-  type FilePreview,
 } from '../lib/extract';
 import { conversationToMarkdown, conversationsToMarkdown, markdownFilename } from '../lib/markdown';
 import { readPrefs } from '../lib/prefs';
 import {
+  GUEST_ID,
+  adoptGuestConversations,
+  analysisKey,
   clearConversations,
   deleteConversation,
   getAllConversations,
   getConversation,
   listConversations,
   saveConversation,
+  sourcesForAi,
   type Conversation,
   type ConversationSummary,
+  type MessageQuote,
+  type SourceOrigin,
   type StoredMessage,
+  type StoredSource,
 } from '../lib/store';
 
-export type Phase = 'empty' | 'preparing' | 'extracting' | 'review' | 'analyzing' | 'ready' | 'error';
-
-/** What is known about the file being read before a conversation exists for it. */
-export interface PendingFile {
+/** A file waiting to be read, being read, or that couldn't be read. */
+export interface ReadingItem {
+  id: string;
   name: string;
   size: number;
-  kind?: FileKind;
-  mimeType?: string;
-  typeLabel?: string;
+  origin: SourceOrigin;
+  status: 'waiting' | 'reading' | 'failed';
+  progress: ExtractProgress | null;
+  /** Why it couldn't be read, when status is 'failed'. */
+  error: string | null;
 }
 
 export interface WorkspaceState {
-  phase: Phase;
   conversation: Conversation | null;
-  /** Object URL owned and revoked by the hook. */
-  preview: FilePreview | null;
-  /** During 'preparing' and 'extracting'. */
-  progress: ExtractProgress | null;
-  /** The file being read, until its conversation exists. */
-  pendingFile: PendingFile | null;
-  error: { stage: 'extract' | 'analyze'; message: string } | null;
+  /** Files in the order they were added. Read files leave the list; failed ones stay until dismissed. */
+  reading: ReadingItem[];
+  analysis: { running: boolean; error: string | null };
   /** `draft` is the partial assistant answer while it streams. */
   chat: { streaming: boolean; draft: string; error: string | null };
 }
 
+const IDLE_ANALYSIS: WorkspaceState['analysis'] = { running: false, error: null };
 const IDLE_CHAT: WorkspaceState['chat'] = { streaming: false, draft: '', error: null };
 
-const EMPTY_STATE: WorkspaceState = {
-  phase: 'empty',
-  conversation: null,
-  preview: null,
-  progress: null,
-  pendingFile: null,
-  error: null,
-  chat: IDLE_CHAT,
-};
+const EMPTY_STATE: WorkspaceState = { conversation: null, reading: [], analysis: IDLE_ANALYSIS, chat: IDLE_CHAT };
 
 const READ_FAILED = "Couldn't read this file. Try another file or set Reading to AI vision.";
-const ANALYZE_FAILED = "Couldn't analyze the text. Try again.";
+const ANALYZE_FAILED = "Couldn't summarize the sources. Try again.";
 const CHAT_FAILED = "Couldn't get an answer. Try again.";
+const NO_SOURCES_FOR_CHAT = 'Tick at least one source with text to ask about.';
+const VISION_NEEDS_SIGN_IN = 'AI vision needs you to sign in. Sign in, or set Reading to On-device and try again.';
+const TOO_MANY_SOURCES = `A conversation holds up to ${MAX_SOURCES} sources. Start a new one for the rest.`;
 const EMPTY_ANSWER = "The AI didn't answer. Try asking again.";
+/** Asked when someone sends a quoted passage without typing anything. */
+export const DEFAULT_QUOTE_QUESTION = 'What does this passage mean for me?';
 const STOPPED_SUFFIX = ' _(stopped)_';
 const SAVE_DELAY_MS = 500;
+/** Room kept in a question for the quoted passage: the quote itself, its "> " prefixes and the label. */
+export const QUOTE_RESERVE_CHARS = MAX_QUOTE_CHARS + 300;
 
 // ---- Pure helpers (unit-tested) -----------------------------------------------------------------
 
@@ -79,15 +89,41 @@ export function titleFromFileName(name: string): string {
   return title || 'Untitled document';
 }
 
-export function documentMeta(c: Conversation): DocumentMeta {
+export function documentMeta(source: StoredSource): DocumentMeta {
   return {
-    fileName: c.file.name,
-    mimeType: c.file.mimeType,
-    kind: c.file.kind,
-    pageCount: c.file.pageCount,
-    meanConfidence: c.extraction.meanConfidence,
-    engine: c.extraction.engineLabel,
+    fileName: source.file.name,
+    mimeType: source.file.mimeType,
+    kind: source.file.kind,
+    pageCount: source.file.pageCount,
+    meanConfidence: source.extraction.meanConfidence,
+    engine: source.extraction.engineLabel,
   };
+}
+
+/** The sources as sent to the AI, trimmed the same way the server would so the request stays small. */
+export function toSourceInputs(sources: StoredSource[]): SourceInput[] {
+  const texts = sources.map((source) => source.text.trim());
+  const allowed = shareBudget(
+    texts.map((text) => text.length),
+    MAX_ANALYZE_CHARS,
+  );
+  return sources.map((source, index) => ({
+    label: source.label,
+    text: texts[index].slice(0, allowed[index]),
+    document: documentMeta(source),
+  }));
+}
+
+/** A question as the AI reads it: the quoted passage as a Markdown quote with its label, then what was asked. */
+export function composeQuestion(question: string, quote?: MessageQuote): string {
+  if (!quote) return question;
+  const passage = quote.text
+    .slice(0, MAX_QUOTE_CHARS)
+    .split(/\r?\n/)
+    .map((line) => `> ${line}`)
+    .join('\n')
+    .slice(0, QUOTE_RESERVE_CHARS - 20);
+  return `${passage} [${quote.label}]\n\n${question}`.slice(0, MAX_QUESTION_CHARS);
 }
 
 /**
@@ -102,7 +138,8 @@ export function toChatHistory(messages: StoredMessage[]): ChatTurn[] {
       const next = messages[index + 1];
       if (!next || next.role !== 'assistant' || next.error || !next.content.trim()) return;
     }
-    turns.push({ role: message.role, content: message.content.slice(0, MAX_CHAT_TURN_CHARS) });
+    const content = message.role === 'user' ? composeQuestion(message.content, message.quote) : message.content;
+    turns.push({ role: message.role, content: content.slice(0, MAX_CHAT_TURN_CHARS) });
   });
   return turns.slice(-MAX_CHAT_HISTORY);
 }
@@ -119,34 +156,76 @@ export function isCancellation(err: unknown): boolean {
   return err instanceof ExtractionAbortedError || isAbortError(err);
 }
 
-function extensionOf(name: string): string {
-  return /\.([a-z0-9]+)$/i.exec(name)?.[1].toLowerCase() ?? '';
+/** True when the summary was made from a different set of sources (or text) than is included now. */
+export function isAnalysisStale(c: Conversation): boolean {
+  return c.analysis !== null && c.analysisKey !== analysisKey(c);
 }
 
 function newId(): string {
   return crypto.randomUUID();
 }
 
+function newConversation(userId: string, title: string): Conversation {
+  const now = Date.now();
+  return {
+    version: 2,
+    id: newId(),
+    userId,
+    title,
+    createdAt: now,
+    updatedAt: now,
+    sources: [],
+    nextSourceNumber: 1,
+    analysis: null,
+    analysisKey: null,
+    model: null,
+    analysisTruncated: false,
+    messages: [],
+  };
+}
+
 // ---- The controller ---------------------------------------------------------------------------------
 
-export function useConversation(user: SessionUser) {
+/** `user` is null for someone who hasn't signed in: files are read on the device and nothing goes to the AI. */
+export function useConversation(user: SessionUser | null) {
   const [state, setState] = useState<WorkspaceState>(EMPTY_STATE);
   const [history, setHistory] = useState<ConversationSummary[]>([]);
   // The latest state, readable from async work without waiting for a render.
   const stateRef = useRef(state);
-  /** The extraction, analysis or history load in flight; replaced (and aborted) by the next one. */
-  const operation = useRef<AbortController | null>(null);
+  /** The files behind waiting and reading items. */
+  const pendingFiles = useRef(new Map<string, File>());
+  /** The item being read and how to stop it. */
+  const readingNow = useRef<{ id: string; controller: AbortController } | null>(null);
+  /** Set while the queue is being worked through. */
+  const pumping = useRef(false);
+  const analysisOperation = useRef<AbortController | null>(null);
   const chatOperation = useRef<AbortController | null>(null);
   const saveTimer = useRef<number | null>(null);
-  const userId = user.id;
+  const userId = user?.id ?? GUEST_ID;
+  const guest = user === null;
+  /** Documents read before signing in, moved into this account; started once per mount. */
+  const adoption = useRef<Promise<string | null> | null>(null);
 
   const update = useCallback((patch: Partial<WorkspaceState>) => {
-    const current = stateRef.current;
-    const next = { ...current, ...patch };
-    if (current.preview && next.preview !== current.preview) URL.revokeObjectURL(current.preview.url);
+    const next = { ...stateRef.current, ...patch };
     stateRef.current = next;
     setState(next);
   }, []);
+
+  const updateItem = useCallback(
+    (id: string, patch: Partial<ReadingItem>) => {
+      update({ reading: stateRef.current.reading.map((item) => (item.id === id ? { ...item, ...patch } : item)) });
+    },
+    [update],
+  );
+
+  const removeItem = useCallback(
+    (id: string) => {
+      pendingFiles.current.delete(id);
+      update({ reading: stateRef.current.reading.filter((item) => item.id !== id) });
+    },
+    [update],
+  );
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -178,182 +257,348 @@ export function useConversation(user: SessionUser) {
 
   /** Replaces the conversation everywhere: state, and (now or debounced) storage. */
   const commit = useCallback(
-    (c: Conversation, patch: Partial<WorkspaceState> = {}, save: 'now' | 'later' | 'no' = 'now') => {
+    (c: Conversation, patch: Partial<WorkspaceState> = {}, save: 'now' | 'later' = 'now') => {
       update({ ...patch, conversation: c });
-      if (save === 'no') return;
       if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
       if (save === 'now') void persist(c);
-      else saveTimer.current = window.setTimeout(() => {
-        saveTimer.current = null;
-        void persist(c);
-      }, SAVE_DELAY_MS);
+      else
+        saveTimer.current = window.setTimeout(() => {
+          saveTimer.current = null;
+          void persist(c);
+        }, SAVE_DELAY_MS);
     },
     [update, persist],
   );
 
-  const beginOperation = useCallback(() => {
-    operation.current?.abort();
-    const controller = new AbortController();
-    operation.current = controller;
-    return controller;
-  }, []);
+  /** Changes the open conversation, if there is one. */
+  const change = useCallback(
+    (edit: (c: Conversation) => Conversation, save: 'now' | 'later' = 'now') => {
+      const c = stateRef.current.conversation;
+      if (c) commit({ ...edit(c), updatedAt: Date.now() }, {}, save);
+    },
+    [commit],
+  );
 
   const stopChat = useCallback(() => {
     chatOperation.current?.abort();
     chatOperation.current = null;
   }, []);
 
-  useEffect(() => {
-    void refreshHistory();
-  }, [refreshHistory]);
+  const stopAnalysis = useCallback(() => {
+    analysisOperation.current?.abort();
+    analysisOperation.current = null;
+  }, []);
+
+  /** Stops reading and forgets every file still waiting. Failed items are dropped too. */
+  const stopReading = useCallback(() => {
+    readingNow.current?.controller.abort();
+    readingNow.current = null;
+    pendingFiles.current.clear();
+  }, []);
+
+  /** Everything in flight, before the workspace switches to another conversation (or none). */
+  const stopEverything = useCallback(() => {
+    stopReading();
+    stopAnalysis();
+    stopChat();
+    flushPendingSave();
+  }, [flushPendingSave, stopAnalysis, stopChat, stopReading]);
 
   useEffect(
     () => () => {
-      operation.current?.abort();
+      readingNow.current?.controller.abort();
+      analysisOperation.current?.abort();
       chatOperation.current?.abort();
       flushPendingSave();
-      const preview = stateRef.current.preview;
-      if (preview) URL.revokeObjectURL(preview.url);
     },
     [flushPendingSave],
   );
 
+  // ---- Summary --------------------------------------------------------------------------------------
+
   const analyze = useCallback(async () => {
     const c = stateRef.current.conversation;
-    if (!c || !c.text.trim()) return;
+    const sources = c ? sourcesForAi(c) : [];
+    if (guest || !c || sources.length === 0) return;
     flushPendingSave();
-    const controller = beginOperation();
-    update({ phase: 'analyzing', error: null });
+    stopAnalysis();
+    const controller = new AbortController();
+    analysisOperation.current = controller;
+    const key = analysisKey(c);
+    update({ analysis: { running: true, error: null } });
     try {
-      const result = await analyzeText({ text: c.text, document: documentMeta(c) }, controller.signal);
-      if (operation.current !== controller) return;
-      operation.current = null;
-      const latest = stateRef.current.conversation ?? c;
+      const result = await analyzeSources({ sources: toSourceInputs(sources) }, controller.signal);
+      if (analysisOperation.current !== controller) return;
+      analysisOperation.current = null;
+      const latest = stateRef.current.conversation;
+      if (!latest || latest.id !== c.id) return;
       commit(
         {
           ...latest,
           title: result.analysis.title.trim() || latest.title,
           analysis: result.analysis,
+          analysisKey: key,
           model: result.model,
           analysisTruncated: result.truncated,
           updatedAt: Date.now(),
         },
-        { phase: 'ready', error: null },
+        { analysis: IDLE_ANALYSIS },
       );
     } catch (err) {
-      if (operation.current !== controller || isCancellation(err)) return;
-      operation.current = null;
-      update({ phase: 'error', error: { stage: 'analyze', message: errorMessage(err, ANALYZE_FAILED) } });
+      if (analysisOperation.current !== controller) return;
+      analysisOperation.current = null;
+      update({ analysis: isCancellation(err) ? IDLE_ANALYSIS : { running: false, error: errorMessage(err, ANALYZE_FAILED) } });
     }
-  }, [beginOperation, commit, flushPendingSave, update]);
+  }, [commit, flushPendingSave, guest, stopAnalysis, update]);
 
-  const startFile = useCallback(
-    async (file: File) => {
-      stopChat();
-      flushPendingSave();
-      const controller = beginOperation();
-      const { signal } = controller;
-      update({
-        ...EMPTY_STATE,
-        phase: 'preparing',
-        pendingFile: { name: file.name, size: file.size },
-        progress: { phase: 'preparing', ratio: 0, label: 'Getting the file ready…' },
+  const cancelAnalysis = useCallback(() => {
+    stopAnalysis();
+    update({ analysis: IDLE_ANALYSIS });
+  }, [stopAnalysis, update]);
+
+  // ---- Reading -------------------------------------------------------------------------------------
+
+  /** Adds a read file to the open conversation, starting one if there is none. Returns that conversation's id. */
+  const addSource = useCallback(
+    (file: File, extraction: StoredSource['extraction'], origin: SourceOrigin): string => {
+      const c = stateRef.current.conversation ?? newConversation(userId, titleFromFileName(file.name));
+      const now = Date.now();
+      const source: StoredSource = {
+        id: newId(),
+        label: `S${c.nextSourceNumber}`,
+        included: true,
+        origin,
+        addedAt: now,
+        file: {
+          name: file.name,
+          mimeType: extraction.mimeType,
+          typeLabel: extraction.typeLabel,
+          kind: extraction.kind,
+          size: file.size,
+          pageCount: Math.max(1, extraction.pages.length),
+        },
+        extraction,
+        text: extraction.text,
+        textEdited: false,
+        revision: 0,
+        blob: file.size <= MAX_STORED_SOURCE_BYTES ? file : null,
+      };
+      commit({
+        ...c,
+        // Until there is a summary, the conversation is named after its first source.
+        title: c.sources.length === 0 && !c.analysis ? titleFromFileName(file.name) : c.title,
+        sources: [...c.sources, source],
+        nextSourceNumber: c.nextSourceNumber + 1,
+        updatedAt: now,
       });
+      return c.id;
+    },
+    [commit, userId],
+  );
 
+  /** Reads one queued file into the open conversation. Returns the conversation's id, or null if nothing was added. */
+  const readOne = useCallback(
+    async (item: ReadingItem): Promise<string | null> => {
+      const file = pendingFiles.current.get(item.id);
+      if (!file) {
+        removeItem(item.id);
+        return null;
+      }
+      const controller = new AbortController();
+      readingNow.current = { id: item.id, controller };
+      updateItem(item.id, { status: 'reading', progress: { phase: 'preparing', ratio: 0, label: 'Getting the file ready…' } });
       try {
-        const detected = await detectFile(file);
-        if (signal.aborted) return;
-        update({ pendingFile: { name: file.name, size: file.size, kind: detected.kind, mimeType: detected.mimeType, typeLabel: detected.label } });
-
-        const preview = await makePreview(file, detected);
-        if (signal.aborted) {
-          if (preview) URL.revokeObjectURL(preview.url);
-          return;
-        }
-        update({ phase: 'extracting', preview });
-
         const prefs = readPrefs();
         const extraction = await extractText(file, {
           mode: prefs.mode,
           language: prefs.language,
-          vision: readWithVision,
-          signal,
+          vision: guest ? undefined : readWithVision,
+          signal: controller.signal,
           onProgress: (progress) => {
-            if (operation.current === controller) update({ progress });
+            if (readingNow.current?.controller === controller) updateItem(item.id, { progress });
           },
         });
-        if (operation.current !== controller) return;
-        operation.current = null;
-
-        const now = Date.now();
-        const conversation: Conversation = {
-          id: newId(),
-          userId,
-          title: titleFromFileName(file.name),
-          createdAt: now,
-          updatedAt: now,
-          file: {
-            name: file.name,
-            mimeType: detected.mimeType,
-            typeLabel: detected.label,
-            kind: detected.kind,
-            size: file.size,
-            pageCount: Math.max(1, extraction.pages.length),
-          },
-          extraction,
-          text: extraction.text,
-          textEdited: false,
-          analysis: null,
-          model: null,
-          analysisTruncated: false,
-          messages: [],
-          source: file.size <= MAX_STORED_SOURCE_BYTES ? file : null,
-        };
-        const review = prefs.reviewBeforeAnalysis || !conversation.text.trim();
-        commit(conversation, { phase: review ? 'review' : 'analyzing', progress: null, pendingFile: null });
-        if (!review) await analyze();
+        if (controller.signal.aborted) return null;
+        const conversationId = addSource(file, extraction, item.origin);
+        removeItem(item.id);
+        return conversationId;
       } catch (err) {
-        if (operation.current !== controller || isCancellation(err)) return;
-        operation.current = null;
-        update({
-          ...EMPTY_STATE,
-          phase: 'error',
-          error: { stage: 'extract', message: extractionErrorMessage(err) },
+        if (controller.signal.aborted || isCancellation(err)) {
+          removeItem(item.id);
+          return null;
+        }
+        const needsSignIn = guest && err instanceof Error && err.message === AI_VISION_MISSING;
+        pendingFiles.current.delete(item.id);
+        updateItem(item.id, {
+          status: 'failed',
+          progress: null,
+          error: needsSignIn ? VISION_NEEDS_SIGN_IN : extractionErrorMessage(err),
         });
+        return null;
+      } finally {
+        if (readingNow.current?.controller === controller) readingNow.current = null;
       }
     },
-    [analyze, beginOperation, commit, flushPendingSave, stopChat, update, userId],
+    [addSource, guest, removeItem, updateItem],
   );
 
-  const cancel = useCallback(() => {
-    operation.current?.abort();
-    operation.current = null;
+  /** Reads waiting files one after another; once none are left, summarizes a conversation that has no summary yet. */
+  const pump = useCallback(async () => {
+    if (pumping.current) return;
+    pumping.current = true;
+    let addedTo: string | null = null;
+    try {
+      for (;;) {
+        const next = stateRef.current.reading.find((item) => item.status === 'waiting');
+        if (!next) break;
+        addedTo = (await readOne(next)) ?? addedTo;
+      }
+    } finally {
+      pumping.current = false;
+    }
+    // Only the conversation the files went into: the reader may have opened another one meanwhile.
     const c = stateRef.current.conversation;
-    if (c) update({ phase: c.analysis ? 'ready' : 'review', progress: null, error: null });
-    else update({ ...EMPTY_STATE });
-  }, [update]);
+    if (c && c.id === addedTo && !c.analysis && !stateRef.current.analysis.running && !readPrefs().reviewBeforeAnalysis) {
+      await analyze();
+    }
+  }, [analyze, readOne]);
 
-  const updateText = useCallback(
-    (text: string) => {
-      const c = stateRef.current.conversation;
-      if (!c || text === c.text) return;
-      commit({ ...c, text, textEdited: text !== c.extraction.text, updatedAt: Date.now() }, {}, 'later');
+  /**
+   * Queues files to read, unpacking ZIP archives first. `alreadySkipped` lists files a picker couldn't fetch,
+   * shown alongside the files that can't be read.
+   */
+  const addFiles = useCallback(
+    async (picked: readonly File[], origin: SourceOrigin = 'upload', alreadySkipped: readonly SkippedFile[] = []) => {
+      if (picked.length === 0 && alreadySkipped.length === 0) return;
+      const bundle = await expandBundles(picked);
+      const { files } = bundle;
+      const skipped = [...alreadySkipped, ...bundle.skipped];
+      const pending = stateRef.current.reading.filter((item) => item.status !== 'failed').length;
+      let room = MAX_SOURCES - (stateRef.current.conversation?.sources.length ?? 0) - pending;
+      const items: ReadingItem[] = [];
+      for (const file of files) {
+        const id = newId();
+        const fits = room > 0;
+        room -= 1;
+        if (fits) pendingFiles.current.set(id, file);
+        items.push({
+          id,
+          name: file.name,
+          size: file.size,
+          origin,
+          status: fits ? 'waiting' : 'failed',
+          progress: null,
+          error: fits ? null : TOO_MANY_SOURCES,
+        });
+      }
+      for (const skip of skipped) {
+        items.push({ id: newId(), name: skip.name, size: 0, origin, status: 'failed', progress: null, error: skip.reason });
+      }
+      update({ reading: [...stateRef.current.reading, ...items] });
+      await pump();
     },
-    [commit],
+    [pump, update],
   );
+
+  /** Adds pasted text as a source. */
+  const addText = useCallback(
+    async (title: string, text: string) => {
+      const name = `${title.trim().replace(/[\\/:*?"<>|]+/g, ' ').slice(0, 80) || 'Pasted text'}.txt`;
+      await addFiles([new File([text], name, { type: 'text/plain' })], 'paste');
+    },
+    [addFiles],
+  );
+
+  /** Stops reading one file (or forgets it while it waits), or dismisses one that failed. */
+  const cancelReading = useCallback(
+    (id: string) => {
+      if (readingNow.current?.id === id) readingNow.current.controller.abort();
+      removeItem(id);
+    },
+    [removeItem],
+  );
+
+  /** Stops reading and forgets every waiting file. */
+  const cancelAllReading = useCallback(() => {
+    stopReading();
+    update({ reading: stateRef.current.reading.filter((item) => item.status === 'failed') });
+  }, [stopReading, update]);
+
+  // ---- Sources ---------------------------------------------------------------------------------------
+
+  const setSourceIncluded = useCallback(
+    (id: string, included: boolean) => {
+      change((c) => ({ ...c, sources: c.sources.map((source) => (source.id === id ? { ...source, included } : source)) }));
+    },
+    [change],
+  );
+
+  const setAllIncluded = useCallback(
+    (included: boolean) => {
+      change((c) => ({ ...c, sources: c.sources.map((source) => ({ ...source, included })) }));
+    },
+    [change],
+  );
+
+  const removeSource = useCallback(
+    (id: string) => {
+      change((c) => ({ ...c, sources: c.sources.filter((source) => source.id !== id) }));
+    },
+    [change],
+  );
+
+  const updateSourceText = useCallback(
+    (id: string, text: string) => {
+      change(
+        (c) => ({
+          ...c,
+          sources: c.sources.map((source) =>
+            source.id === id && source.text !== text
+              ? { ...source, text, textEdited: text !== source.extraction.text, revision: source.revision + 1 }
+              : source,
+          ),
+        }),
+        'later',
+      );
+    },
+    [change],
+  );
+
+  // ---- Chat --------------------------------------------------------------------------------------------
 
   const ask = useCallback(
-    async (question: string) => {
-      const asked = question.trim();
+    async (typed: string, quote?: MessageQuote) => {
+      const question = typed.trim() || (quote ? DEFAULT_QUOTE_QUESTION : '');
       const c = stateRef.current.conversation;
-      if (!c || !asked || stateRef.current.chat.streaming) return;
+      if (guest || !c || !question || stateRef.current.chat.streaming) return;
+      const sources = sourcesForAi(c);
 
       // "Try again" re-asks a question that failed; don't keep the failed copy.
       const last = c.messages.at(-1);
-      const previous = last?.role === 'user' && last.error && last.content === asked ? c.messages.slice(0, -1) : c.messages;
-      const userMessage: StoredMessage = { id: newId(), role: 'user', content: asked, createdAt: Date.now() };
+      const retry = last?.role === 'user' && last.error && last.content === question && last.quote?.text === quote?.text;
+      const previous = retry ? c.messages.slice(0, -1) : c.messages;
+      const userMessage: StoredMessage = {
+        id: newId(),
+        role: 'user',
+        content: question,
+        createdAt: Date.now(),
+        ...(quote ? { quote } : {}),
+      };
       const withQuestion: Conversation = { ...c, messages: [...previous, userMessage], updatedAt: Date.now() };
+
+      const fail = (message: string) => {
+        const current = stateRef.current.conversation ?? withQuestion;
+        commit(
+          { ...current, messages: current.messages.map((m) => (m.id === userMessage.id ? { ...m, error: message } : m)) },
+          { chat: { streaming: false, draft: '', error: message } },
+        );
+      };
+      if (sources.length === 0) {
+        commit(withQuestion);
+        fail(NO_SOURCES_FOR_CHAT);
+        return;
+      }
       commit(withQuestion, { chat: { streaming: true, draft: '', error: null } });
 
       stopChat();
@@ -361,7 +606,12 @@ export function useConversation(user: SessionUser) {
       chatOperation.current = controller;
       try {
         const answer = await streamChat(
-          { text: c.text, document: documentMeta(c), analysis: c.analysis, history: toChatHistory(previous), question: asked },
+          {
+            sources: toSourceInputs(sources),
+            analysis: isAnalysisStale(c) ? null : c.analysis,
+            history: toChatHistory(previous),
+            question: composeQuestion(question, quote),
+          },
           {
             signal: controller.signal,
             onChunk: (draft) => {
@@ -376,25 +626,17 @@ export function useConversation(user: SessionUser) {
         const reply: StoredMessage = { id: newId(), role: 'assistant', content: answer, createdAt: Date.now() };
         commit({ ...current, messages: [...current.messages, reply], updatedAt: Date.now() }, { chat: IDLE_CHAT });
       } catch (err) {
-        // Stopped, superseded by a new document, or the reader moved to another conversation.
+        // Stopped, or the reader moved to another conversation.
         if (chatOperation.current !== controller) return;
         chatOperation.current = null;
         if (isCancellation(err)) {
           update({ chat: IDLE_CHAT });
           return;
         }
-        const message = err instanceof Error && err.message === EMPTY_ANSWER ? EMPTY_ANSWER : errorMessage(err, CHAT_FAILED);
-        const current = stateRef.current.conversation ?? withQuestion;
-        commit(
-          {
-            ...current,
-            messages: current.messages.map((m) => (m.id === userMessage.id ? { ...m, error: message } : m)),
-          },
-          { chat: { streaming: false, draft: '', error: message } },
-        );
+        fail(err instanceof Error && err.message === EMPTY_ANSWER ? EMPTY_ANSWER : errorMessage(err, CHAT_FAILED));
       }
     },
-    [commit, stopChat, update],
+    [commit, guest, stopChat, update],
   );
 
   const stopAnswer = useCallback(() => {
@@ -411,42 +653,40 @@ export function useConversation(user: SessionUser) {
     }
   }, [commit, stopChat, update]);
 
+  // ---- Conversations ---------------------------------------------------------------------------------
+
   const open = useCallback(
     async (id: string) => {
-      if (stateRef.current.conversation?.id === id && stateRef.current.phase !== 'error') return;
-      stopChat();
-      flushPendingSave();
-      const controller = beginOperation();
+      if (stateRef.current.conversation?.id === id) return;
+      stopEverything();
       const c = await getConversation(userId, id).catch(() => null);
-      if (operation.current !== controller) return;
       if (!c) {
-        operation.current = null;
         await refreshHistory();
         return;
       }
-      let preview: FilePreview | null = null;
-      if (c.source) {
-        const file = c.source instanceof File ? c.source : new File([c.source], c.file.name, { type: c.file.mimeType });
-        const detected: DetectedFile = { kind: c.file.kind, mimeType: c.file.mimeType, label: c.file.typeLabel, ext: extensionOf(c.file.name) };
-        preview = await makePreview(file, detected);
-      }
-      if (operation.current !== controller) {
-        if (preview) URL.revokeObjectURL(preview.url);
-        return;
-      }
-      operation.current = null;
-      update({ ...EMPTY_STATE, phase: c.analysis ? 'ready' : 'review', conversation: c, preview });
+      update({ ...EMPTY_STATE, conversation: c });
     },
-    [beginOperation, flushPendingSave, refreshHistory, stopChat, update, userId],
+    [refreshHistory, stopEverything, update, userId],
   );
 
+  // Loads the history, after first bringing in anything read in this tab before signing in, and opens that.
+  useEffect(() => {
+    let active = true;
+    adoption.current ??= guest ? Promise.resolve(null) : adoptGuestConversations(userId).catch(() => null);
+    void adoption.current.then(async (adoptedId) => {
+      if (!active) return;
+      await refreshHistory();
+      if (adoptedId && active) await open(adoptedId);
+    });
+    return () => {
+      active = false;
+    };
+  }, [guest, open, refreshHistory, userId]);
+
   const reset = useCallback(() => {
-    operation.current?.abort();
-    operation.current = null;
-    stopChat();
-    flushPendingSave();
+    stopEverything();
     update({ ...EMPTY_STATE });
-  }, [flushPendingSave, stopChat, update]);
+  }, [stopEverything, update]);
 
   const remove = useCallback(
     async (id: string) => {
@@ -481,12 +721,19 @@ export function useConversation(user: SessionUser) {
   }, [flushPendingSave, userId]);
 
   return {
+    guest,
     state,
     history,
-    startFile,
-    cancel,
-    updateText,
+    addFiles,
+    addText,
+    cancelReading,
+    cancelAllReading,
+    setSourceIncluded,
+    setAllIncluded,
+    removeSource,
+    updateSourceText,
     analyze,
+    cancelAnalysis,
     ask,
     stopAnswer,
     open,

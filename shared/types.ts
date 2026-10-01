@@ -21,6 +21,10 @@ export interface AuthConfig {
   aiConfigured: boolean;
   /** The Gemini model id the server will use. */
   model: string;
+  /** Google Drive picker settings (a browser API key and the Cloud project number), or null when not set up. */
+  drive: { apiKey: string; appId: string } | null;
+  /** Azure app registration for the OneDrive picker, or null when not set up. */
+  oneDrive: { clientId: string } | null;
 }
 
 /** POST /api/auth/google  body */
@@ -89,17 +93,27 @@ export interface Analysis {
   caveats: string[];
 }
 
-/** POST /api/analyze  body */
-export interface AnalyzeRequest {
+/**
+ * One document in a conversation, as sent to the AI. `label` is how the AI cites it ("S1", "S2"…); labels are
+ * stable within a conversation, so a removed source leaves a gap rather than renumbering the others.
+ */
+export interface SourceInput {
+  label: string;
   text: string;
   document: DocumentMeta;
+}
+
+/** POST /api/analyze  body */
+export interface AnalyzeRequest {
+  /** The sources to summarize together, in display order. */
+  sources: SourceInput[];
 }
 
 /** POST /api/analyze  response */
 export interface AnalyzeResponse {
   analysis: Analysis;
   model: string;
-  /** True when the server cut the text to MAX_ANALYZE_CHARS before analysis. */
+  /** True when the server cut some source text to fit MAX_ANALYZE_CHARS in total. */
   truncated: boolean;
 }
 
@@ -117,8 +131,7 @@ export interface ChatTurn {
  * Response: `text/plain; charset=utf-8`, streamed in chunks (the assistant's Markdown answer).
  */
 export interface ChatRequest {
-  text: string;
-  document: DocumentMeta;
+  sources: SourceInput[];
   analysis: Analysis | null;
   /** Previous turns, oldest first, excluding `question`. */
   history: ChatTurn[];
@@ -139,6 +152,22 @@ export interface VisionRequest {
 
 /** POST /api/vision  response */
 export interface VisionResponse {
+  text: string;
+  model: string;
+}
+
+// ---- Transcription (voice input when the browser has no speech recognition) --
+
+/** POST /api/transcribe  body */
+export interface TranscribeRequest {
+  /** Base64 audio bytes WITHOUT a `data:` prefix. */
+  audio: string;
+  /** e.g. audio/webm, audio/ogg, audio/mp4. Codec parameters are allowed. */
+  mimeType: string;
+}
+
+/** POST /api/transcribe  response */
+export interface TranscribeResponse {
   text: string;
   model: string;
 }

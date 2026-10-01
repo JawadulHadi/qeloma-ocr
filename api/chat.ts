@@ -3,17 +3,17 @@ import { assertSameOrigin, readJson, reportError, route } from '../server/http.j
 import { requireUser } from '../server/session.js';
 import { validateChatRequest } from '../server/validate.js';
 
-/** Under Vercel's 4.5 MB body cap; document text beyond MAX_ANALYZE_CHARS is truncated, not rejected. */
+/** Under Vercel's 4.5 MB body cap; source text beyond MAX_ANALYZE_CHARS in total is truncated, not rejected. */
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /** Appended when the model fails after part of the answer was already sent. */
-const CUT_OFF_NOTE ='\n\n_The answer was cut off. Ask again._';
+const CUT_OFF_NOTE = '\n\n_The answer was cut off. Ask again._';
 
 export const POST = route(async (request) => {
   assertSameOrigin(request);
   await requireUser(request);
   const chat = validateChatRequest(
-    await readJson(request, MAX_BODY_BYTES, 'This question and its document are too large to send.'),
+    await readJson(request, MAX_BODY_BYTES, 'This question and its sources are too large to send. Leave some sources out.'),
   );
 
   const answer = streamChat(chat, { signal: request.signal });

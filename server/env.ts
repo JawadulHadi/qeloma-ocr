@@ -46,6 +46,19 @@ export function geminiModel(): string {
   return read('GEMINI_MODEL') ?? DEFAULT_GEMINI_MODEL;
 }
 
+/** Google Drive picker: a browser API key and the Cloud project number. Both public; null unless both are set. */
+export function driveConfig(): { apiKey: string; appId: string } | null {
+  const apiKey = read('GOOGLE_API_KEY');
+  const appId = read('GOOGLE_APP_ID');
+  return apiKey && appId ? { apiKey, appId } : null;
+}
+
+/** OneDrive picker: the Azure app registration's client id (public), or null. */
+export function oneDriveConfig(): { clientId: string } | null {
+  const clientId = read('MICROSOFT_CLIENT_ID');
+  return clientId ? { clientId } : null;
+}
+
 // Kept on globalThis so Vite's dev-time module reloads don't mint a new secret (and sign everyone out).
 const devSecretStore = globalThis as typeof globalThis & { __scanwiseDevSessionSecret?: Uint8Array };
 

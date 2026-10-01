@@ -1,6 +1,6 @@
 import { MAX_ANALYZE_CHARS } from '../../shared/limits';
 import type { Analysis, Importance } from '../../shared/types';
-import type { Conversation, StoredMessage } from './store';
+import { sourcesForAi, type Conversation, type StoredMessage, type StoredSource } from './store';
 
 export interface MarkdownOptions {
   /** Include the (possibly edited) text that was analyzed. Default true. */
@@ -158,18 +158,35 @@ function exportedLine(at: Date): string {
 }
 
 function detailsTable(c: Conversation): string {
-  const { meanConfidence, engineLabel } = c.extraction;
-  const engine = meanConfidence === null ? engineLabel : `${engineLabel} (mean confidence ${Math.round(meanConfidence)}%)`;
   const rows = [
-    ['File', c.file.name],
-    ['Type', c.file.typeLabel],
-    ['Size', formatBytes(c.file.size)],
-    ['Pages', String(c.file.pageCount)],
-    ['Extraction engine', engine],
+    ['Sources', String(c.sources.length)],
     ...(c.model ? [['Model', c.model]] : []),
     ['Created', formatDateTime(new Date(c.createdAt))],
   ];
   return table(['Detail', 'Value'], rows);
+}
+
+function howRead(source: StoredSource): string {
+  const { meanConfidence, engineLabel } = source.extraction;
+  return meanConfidence === null ? engineLabel : `${engineLabel} (mean confidence ${Math.round(meanConfidence)}%)`;
+}
+
+/** The list the citation markers ([S1], [S2]…) refer to. */
+function sourcesTable(c: Conversation): string | null {
+  if (c.sources.length === 0) return null;
+  const used = new Set(sourcesForAi(c).map((source) => source.id));
+  return table(
+    ['Source', 'File', 'Type', 'Size', 'Pages', 'How it was read', 'Used by the AI'],
+    c.sources.map((source) => [
+      source.label,
+      source.file.name,
+      source.file.typeLabel,
+      formatBytes(source.file.size),
+      String(source.file.pageCount),
+      howRead(source),
+      used.has(source.id) ? 'Yes' : 'No',
+    ]),
+  );
 }
 
 function analysisSections(a: Analysis, h: (depth: number, text: string) => string): string[] {
@@ -207,15 +224,20 @@ function analysisSections(a: Analysis, h: (depth: number, text: string) => strin
 function turn(m: StoredMessage, created: Date): string {
   const at = new Date(m.createdAt);
   const when = sameDay(at, created) ? formatTime(at) : formatDateTime(at);
-  const parts = [`${m.role === 'user' ? '**You**' : '**Scanwise**'} — ${when}`, m.content.trimEnd()];
+  const parts = [`${m.role === 'user' ? '**You**' : '**Scanwise**'} — ${when}`];
+  if (m.quote) {
+    const lines = m.quote.text.replace(/\r\n?/g, '\n').split('\n');
+    parts.push(`${lines.map((line) => `> ${line}`).join('\n')}\n>\n> — [${m.quote.label}]`);
+  }
+  parts.push(m.content.trimEnd());
   if (m.error) parts.push(`_Not answered: ${oneLine(m.error)}_`);
   return parts.join('\n\n');
 }
 
-function readingNotes(c: Conversation): string | null {
+function readingNotes(source: StoredSource): string | null {
   const notes = [
-    ...c.extraction.warnings,
-    ...c.extraction.pages.filter((p) => p.note).map((p) => `Page ${p.index + 1}: ${p.note}`),
+    ...source.extraction.warnings,
+    ...source.extraction.pages.filter((p) => p.note).map((p) => `Page ${p.index + 1}: ${p.note}`),
   ]
     .map(oneLine)
     .filter(Boolean);
@@ -228,8 +250,10 @@ function renderConversation(c: Conversation, o: RenderOptions): string {
   const blocks = [h(0, o.number === undefined ? title : `${o.number}. ${title}`)];
   if (o.intro) blocks.push(o.intro);
   blocks.push(detailsTable(c));
+  const sources = sourcesTable(c);
+  if (sources) blocks.push(h(1, 'Sources'), sources);
   if (c.analysisTruncated) {
-    blocks.push(`_The text was long, so only its first ${formatCount(MAX_ANALYZE_CHARS)} characters were analyzed._`);
+    blocks.push(`_The sources were long, so only ${formatCount(MAX_ANALYZE_CHARS)} characters of them were analyzed._`);
   }
 
   if (c.analysis) blocks.push(...analysisSections(c.analysis, h));
@@ -239,13 +263,16 @@ function renderConversation(c: Conversation, o: RenderOptions): string {
     blocks.push(h(1, 'Conversation'), ...c.messages.map((m) => turn(m, created)));
   }
 
-  const text = c.text.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
-  if (o.includeExtractedText && text.trim()) {
+  const withText = c.sources.filter((source) => source.text.trim());
+  if (o.includeExtractedText && withText.length) {
     blocks.push(h(1, 'Extracted text'));
-    if (c.textEdited) blocks.push('_Edited in Scanwise after extraction._');
-    const notes = readingNotes(c);
-    if (notes) blocks.push(notes);
-    blocks.push(fenced(text, 'text'));
+    for (const source of withText) {
+      blocks.push(h(2, `${source.label} — ${literal(source.file.name)}`));
+      if (source.textEdited) blocks.push('_Edited in Scanwise after extraction._');
+      const notes = readingNotes(source);
+      if (notes) blocks.push(notes);
+      blocks.push(fenced(source.text.replace(/\r\n?/g, '\n').replace(/\n+$/, ''), 'text'));
+    }
   }
   return blocks.join('\n\n');
 }
@@ -282,7 +309,8 @@ export function conversationsToMarkdown(cs: Conversation[], opts: MarkdownOption
   const contents = cs
     .map((c, i) => {
       const label = literal(c.title) || 'Untitled document';
-      return `${i + 1}. [${label}](#${anchors[i]}) — ${literal(c.file.name)}, ${formatDate(new Date(c.createdAt))}`;
+      const what = c.sources.length === 1 ? literal(c.sources[0].file.name) : `${c.sources.length} sources`;
+      return `${i + 1}. [${label}](#${anchors[i]}) — ${what}, ${formatDate(new Date(c.createdAt))}`;
     })
     .join('\n');
 
